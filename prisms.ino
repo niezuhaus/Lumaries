@@ -4,7 +4,7 @@
 #define ENABLE_PIN 38
 
 #define SENSOR_PIN 12
-#define LDR_PIN A3
+#define LDR_PIN A5
 
 const int stepsPerRevolution = 200;  // NEMA 17 (1.8° per step)
 const int microstepping = 16;        // Set to match your driver jumpers (1, 2, 4, 8, or 16)
@@ -17,7 +17,6 @@ const int potiMin = 480;
 const int potiMax = 520;
 const int bounceWaitSteps = 50;
 
-int adcPin = A0;
 int lastPotiIn = 0;
 int potiIn = 0;
 int stepDelay = 1000;
@@ -32,6 +31,7 @@ int deafSteps = 0;
 void setup() {
   Serial.begin(9600);
   pinMode(LED_BUILTIN, OUTPUT);
+  pinMode(LDR_PIN, INPUT);
   pinMode(SENSOR_PIN, INPUT_PULLUP);
 
   // RAMPS stepper pins
@@ -45,41 +45,47 @@ void setup() {
 void loop() {
   if (deafSteps > 0) {
     deafSteps--;
-    magnet = HIGH;
-    light = 500;
-  } else if (potiIn > 520 || potiIn < 480) {
-    magnet = digitalRead(SENSOR_PIN);
-    light = analogRead(LDR_PIN);
-    lightMeasures[index] = light;
-    index++;
-    index %= 10;
-
-    Serial.print(average());
-    Serial.print(" ");
-    Serial.println(light);
-  }
-
-  potiIn = analogRead(adcPin);
-
-  if (magnet == LOW || average() > lightThreshold) {
-    digitalWrite(LED_BUILTIN, HIGH);  // if adcIn > 500, led light
-    reverse = !reverse;
-    deafSteps = bounceWaitSteps;
   } else {
-    digitalWrite(LED_BUILTIN, LOW);
+    potiIn = analogRead(LDR_PIN);
+
+    if (potiIn > potiMax) {
+      stepDelay = map(potiIn, 512, 1024, maxDelay, minDelay);
+      // steps = reverse ? -10 : 10;
+    } else if (potiIn < 504) {
+      stepDelay = map(potiIn, 0, 512, minDelay, maxDelay);
+      // steps = reverse ? 10 : -10;
+    }
+    Serial.println(potiIn);
+    deafSteps = 10;
   }
 
-  if (potiIn > potiMax) {
-    vel = map(potiIn, 512, 1024, minSpeed, maxSpeed);
-    steps = reverse ? -10 : 10;
-  } else if (potiIn < 504) {
-    vel = map(potiIn, 0, 512, maxSpeed, minSpeed);
-    steps = reverse ? 10 : -10;
-  }
-  myStepper.setSpeed(vel);
+  //   magnet = HIGH;
+  //   light = 500;
+  // } else if (potiIn > 520 || potiIn < 480) {
+  //   magnet = digitalRead(SENSOR_PIN);
+  //   light = analogRead(LDR_PIN);
+  //   lightMeasures[index] = light;
+  //   index++;
+  //   index %= 10;
+
+  //   Serial.print(average());
+  //   Serial.print(" ");
+  //   Serial.println(light);
+  // }
+
+  // if (magnet == LOW || average() > lightThreshold) {
+  //   digitalWrite(LED_BUILTIN, HIGH);  // if adcIn > 500, led light
+  //   reverse = !reverse;
+  //   deafSteps = bounceWaitSteps;
+  // } else {
+  //   digitalWrite(LED_BUILTIN, LOW);
+  // }
+  // myStepper.setSpeed(vel);
   if ((potiIn > potiMax || potiIn < potiMin)) {
-    myStepper.step(steps);
-    lastPotiIn = potiIn;
+    digitalWrite(STEP_PIN, HIGH);
+    delayMicroseconds(stepDelay / 2);
+    digitalWrite(STEP_PIN, LOW);
+    delayMicroseconds(stepDelay / 2);
   }
 }
 
