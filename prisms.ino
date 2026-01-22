@@ -1,16 +1,18 @@
-#include <Stepper.h>
-
-#define SENSOR_PIN 12
-#define LDR_PIN A1
-
+// RAMPS 1.4 X-axis pins for NEMA 17
 #define STEP_PIN 54
 #define DIR_PIN 55
 #define ENABLE_PIN 38
 
-const int stepsPerRevolution = 2048;  // 28BYJ-48
+#define SENSOR_PIN 12
+#define LDR_PIN A3
+
+const int stepsPerRevolution = 200;  // NEMA 17 (1.8° per step)
+const int microstepping = 16;        // Set to match your driver jumpers (1, 2, 4, 8, or 16)
+const int stepsPerRev = stepsPerRevolution * microstepping;
+
 const int lightThreshold = 800;
-const int minSpeed = 7;
-const int maxSpeed = 15;
+const int minDelay = 200;   // Fastest speed (microseconds between steps)
+const int maxDelay = 2000;  // Slowest speed
 const int potiMin = 480;
 const int potiMax = 520;
 const int bounceWaitSteps = 50;
@@ -18,25 +20,26 @@ const int bounceWaitSteps = 50;
 int adcPin = A0;
 int lastPotiIn = 0;
 int potiIn = 0;
-int vel = 10;
-int steps = 0;
+int stepDelay = 1000;
+int stepsToMove = 0;
 bool reverse = false;
 int magnet;
 int light = 0;
 int lightMeasures[10] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-int index = 0;
+int idx = 0;
 int deafSteps = 0;
 
-Stepper myStepper(
-  stepsPerRevolution,
-  8, 10, 9, 11  // Reihenfolge wichtig!
-);
-
 void setup() {
-  Serial.begin(9600);                 // init serial to 9600b/s
-  pinMode(LED_BUILTIN, OUTPUT);       // set ledPin to OUTPUT
-  pinMode(SENSOR_PIN, INPUT_PULLUP);  // interner Pull-up
-  myStepper.setSpeed(25);             // RPM
+  Serial.begin(9600);
+  pinMode(LED_BUILTIN, OUTPUT);
+  pinMode(SENSOR_PIN, INPUT_PULLUP);
+
+  // RAMPS stepper pins
+  pinMode(STEP_PIN, OUTPUT);
+  pinMode(DIR_PIN, OUTPUT);
+  pinMode(ENABLE_PIN, OUTPUT);
+
+  digitalWrite(ENABLE_PIN, LOW);  // LOW = enabled on RAMPS
 }
 
 void loop() {
@@ -46,7 +49,7 @@ void loop() {
     light = 500;
   } else if (potiIn > 520 || potiIn < 480) {
     magnet = digitalRead(SENSOR_PIN);
-    // light = analogRead(LDR_PIN);
+    light = analogRead(LDR_PIN);
     lightMeasures[index] = light;
     index++;
     index %= 10;
