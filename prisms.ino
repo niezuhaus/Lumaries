@@ -11,11 +11,12 @@ const int microstepping = 16;        // Set to match your driver jumpers (1, 2, 
 const int stepsPerRev = stepsPerRevolution * microstepping;
 
 const int lightThreshold = 800;
-const int minDelay = 200;   // Fastest speed (microseconds between steps)
-const int maxDelay = 2000;  // Slowest speed
+const int minDelay = 1000;   // Fastest speed (microseconds between steps)
+const int maxDelay = 10000;  // Slowest speed
 const int potiMin = 480;
 const int potiMax = 520;
 const int bounceWaitSteps = 50;
+const int measureIntervall = 20;
 
 int lastPotiIn = 0;
 int potiIn = 0;
@@ -24,9 +25,10 @@ int stepsToMove = 0;
 bool reverse = false;
 int magnet;
 int light = 0;
-int lightMeasures[10] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 int idx = 0;
 int deafSteps = 0;
+bool _forward = true;
+bool forward = true;
 
 void setup() {
   Serial.begin(9600);
@@ -49,14 +51,20 @@ void loop() {
     potiIn = analogRead(LDR_PIN);
 
     if (potiIn > potiMax) {
-      stepDelay = map(potiIn, 512, 1024, maxDelay, minDelay);
+      stepDelay = map(potiIn, potiMax, 1024, maxDelay, minDelay);
+      forward = true;
       // steps = reverse ? -10 : 10;
-    } else if (potiIn < 504) {
-      stepDelay = map(potiIn, 0, 512, minDelay, maxDelay);
+    } else if (potiIn < potiMin) {
+      stepDelay = map(potiIn, 0, potiMin, minDelay, maxDelay);
+      forward = false;
       // steps = reverse ? 10 : -10;
     }
+    if (forward != _forward) {
+      digitalWrite(DIR_PIN, forward);
+    }
+    _forward = forward;
     Serial.println(potiIn);
-    deafSteps = 10;
+    deafSteps = measureIntervall;
   }
 
   //   magnet = HIGH;
@@ -83,16 +91,16 @@ void loop() {
   // myStepper.setSpeed(vel);
   if ((potiIn > potiMax || potiIn < potiMin)) {
     digitalWrite(STEP_PIN, HIGH);
-    delayMicroseconds(stepDelay / 2);
+    delayMicroseconds(stepDelay);
     digitalWrite(STEP_PIN, LOW);
-    delayMicroseconds(stepDelay / 2);
+    delayMicroseconds(stepDelay);
   }
 }
 
-int average() {
-  int sum = 0;
-  for (int i = 0; i < 10; i++) {
-    sum += lightMeasures[i];
-  }
-  return sum / 10;
-}
+// int average() {
+//   int sum = 0;
+//   for (int i = 0; i < 10; i++) {
+//     sum += lightMeasures[i];
+//   }
+//   return sum / 10;
+// }
