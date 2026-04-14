@@ -1,106 +1,110 @@
+#include <AccelStepper.h>
+
 // RAMPS 1.4 X-axis pins for NEMA 17
-#define STEP_PIN 54
-#define DIR_PIN 55
-#define ENABLE_PIN 38
+#define X_STEP 54
+#define X_DIR 55
+#define X_ENABLE 38
+#define Y_STEP 36
+#define Y_DIR 34
+#define Y_ENABLE 30
 
 #define SENSOR_PIN 12
-#define LDR_PIN A5
+#define POTI1 A4
+#define POTI2 A9
+#define DREH_POTI A3
+#define LASER_PIN 45
 
 const int stepsPerRevolution = 200;  // NEMA 17 (1.8° per step)
-const int microstepping = 16;        // Set to match your driver jumpers (1, 2, 4, 8, or 16)
+const int microstepping = 16;
 const int stepsPerRev = stepsPerRevolution * microstepping;
 
 const int lightThreshold = 800;
-const int minDelay = 1000;   // Fastest speed (microseconds between steps)
-const int maxDelay = 10000;  // Slowest speed
-const int potiMin = 480;
-const int potiMax = 520;
-const int bounceWaitSteps = 50;
-const int measureIntervall = 20;
+const float minSpeed = 0;    // Steps per second (langsam)
+const float maxSpeed = 100;  // Steps per second (schnell)
+const int potiMin = 350;
+const int potiMax = 650;
+const int measureIntervall = 200;
 
-int lastPotiIn = 0;
 int potiIn = 0;
-int stepDelay = 1000;
-int stepsToMove = 0;
-bool reverse = false;
-int magnet;
-int light = 0;
-int idx = 0;
+int potiIn2 = 0;
+int drehPoti = 0;
 int deafSteps = 0;
-bool _forward = true;
-bool forward = true;
+int speed1 = 0;
+int speed2 = 0;
+int laser = 0;
+
+// AccelxStepper im DRIVER-Modus (Step + Dir)
+AccelStepper xStepper(AccelStepper::DRIVER, X_STEP, X_DIR);
+AccelStepper yStepper(AccelStepper::DRIVER, Y_STEP, Y_DIR);
 
 void setup() {
   Serial.begin(9600);
   pinMode(LED_BUILTIN, OUTPUT);
-  pinMode(LDR_PIN, INPUT);
+  pinMode(LASER_PIN, OUTPUT);
+  pinMode(POTI1, INPUT);
+  pinMode(POTI2, INPUT);
+  pinMode(DREH_POTI, INPUT);
   pinMode(SENSOR_PIN, INPUT_PULLUP);
 
-  // RAMPS stepper pins
-  pinMode(STEP_PIN, OUTPUT);
-  pinMode(DIR_PIN, OUTPUT);
-  pinMode(ENABLE_PIN, OUTPUT);
+  pinMode(X_ENABLE, OUTPUT);
+  pinMode(Y_ENABLE, OUTPUT);
+  digitalWrite(X_ENABLE, LOW);  // LOW = enabled on RAMPS
+  digitalWrite(Y_ENABLE, LOW);
 
-  digitalWrite(ENABLE_PIN, LOW);  // LOW = enabled on RAMPS
+  xStepper.setMaxSpeed(maxSpeed);
+  xStepper.setAcceleration(1000);  // Steps/s²
+
+  yStepper.setMaxSpeed(maxSpeed);
+  yStepper.setAcceleration(1000);  // Steps/s²
 }
 
 void loop() {
+
+  potiIn = analogRead(POTI1);
+  potiIn2 = analogRead(POTI2);
+  drehPoti = analogRead(DREH_POTI);
   if (deafSteps > 0) {
     deafSteps--;
   } else {
-    potiIn = analogRead(LDR_PIN);
+    laser = min(max(map(drehPoti, 100, 900, 255, 0), 0), 255);
 
     if (potiIn > potiMax) {
-      stepDelay = map(potiIn, potiMax, 1024, maxDelay, minDelay);
-      forward = true;
-      // steps = reverse ? -10 : 10;
+      speed1 = map(potiIn, potiMax, 1024, minSpeed, maxSpeed);
+      xStepper.setSpeed(speed1);  // Positiv = vorwärts
     } else if (potiIn < potiMin) {
-      stepDelay = map(potiIn, 0, potiMin, minDelay, maxDelay);
-      forward = false;
-      // steps = reverse ? 10 : -10;
+      speed1 = map(potiIn, 0, potiMin, maxSpeed, minSpeed);
+      xStepper.setSpeed(-speed1);  // Negativ = rückwärts
+    } else {
+      xStepper.setSpeed(0);  // Stopp in der Mitte
     }
-    if (forward != _forward) {
-      digitalWrite(DIR_PIN, forward);
+
+    if (potiIn2 > potiMax) {
+      speed2 = map(potiIn2, potiMax, 1024, minSpeed, maxSpeed);
+      yStepper.setSpeed(speed2);  // Positiv = vorwärts
+    } else if (potiIn2 < potiMin) {
+      speed2 = map(potiIn2, 0, potiMin, maxSpeed, minSpeed);
+      yStepper.setSpeed(-speed2);  // Negativ = rückwärts
+    } else {
+      yStepper.setSpeed(0);  // Stopp in der Mitte
     }
-    _forward = forward;
-    Serial.println(potiIn);
+
+    Serial.print(potiIn);
+    Serial.print(' ');
+    Serial.print(speed1);
+    Serial.print(' ');
+    Serial.print(potiIn2);
+    Serial.print(' ');
+    Serial.print(speed2);
+    Serial.print(' ');
+    Serial.print(drehPoti);
+    Serial.print(' ');
+    Serial.print(laser);
+    Serial.println(' ');
+
     deafSteps = measureIntervall;
   }
-
-  //   magnet = HIGH;
-  //   light = 500;
-  // } else if (potiIn > 520 || potiIn < 480) {
-  //   magnet = digitalRead(SENSOR_PIN);
-  //   light = analogRead(LDR_PIN);
-  //   lightMeasures[index] = light;
-  //   index++;
-  //   index %= 10;
-
-  //   Serial.print(average());
-  //   Serial.print(" ");
-  //   Serial.println(light);
-  // }
-
-  // if (magnet == LOW || average() > lightThreshold) {
-  //   digitalWrite(LED_BUILTIN, HIGH);  // if adcIn > 500, led light
-  //   reverse = !reverse;
-  //   deafSteps = bounceWaitSteps;
-  // } else {
-  //   digitalWrite(LED_BUILTIN, LOW);
-  // }
-  // myStepper.setSpeed(vel);
-  if ((potiIn > potiMax || potiIn < potiMin)) {
-    digitalWrite(STEP_PIN, HIGH);
-    delayMicroseconds(stepDelay);
-    digitalWrite(STEP_PIN, LOW);
-    delayMicroseconds(stepDelay);
-  }
+  analogWrite(LASER_PIN, laser);
+  // Motor bewegen(non - blocking)
+  xStepper.runSpeed();
+  yStepper.runSpeed();
 }
-
-// int average() {
-//   int sum = 0;
-//   for (int i = 0; i < 10; i++) {
-//     sum += lightMeasures[i];
-//   }
-//   return sum / 10;
-// }
