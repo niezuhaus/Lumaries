@@ -4,9 +4,9 @@
 #define X_STEP    54
 #define X_DIR     55
 #define X_ENABLE  38
-#define Y_STEP    36
-#define Y_DIR     34
-#define Y_ENABLE  30
+#define Y_STEP 60
+#define Y_DIR 61
+#define Y_ENABLE 56
 
 #define SENSOR_PIN  12   // button, INPUT_PULLUP → LOW when pressed
 #define POTI1       A4   // X-axis jog
@@ -45,6 +45,13 @@ int currentLaserPower = 0;
 // ─── Button debounce ─────────────────────────────────────────────────────────
 unsigned long lastButtonTime = 0;
 const unsigned long DEBOUNCE_MS = 200;
+
+// ─── WASD keyboard jog (calibration phase) ───────────────────────────────────
+unsigned long keyJogXUntil = 0; // millis() timestamp until X key-jog is active
+unsigned long keyJogYUntil = 0;
+float keyJogXSpeed = 0.0f;
+float keyJogYSpeed = 0.0f;
+const unsigned long KEY_JOG_MS = 180; // how long each keypress drives the motor
 
 // ─── LED blink state ─────────────────────────────────────────────────────────
 int  blinkTarget  = 1;    // how many blinks per cycle
@@ -163,8 +170,9 @@ float potiToSpeed(int raw) {
 }
 
 void jogMotors() {
-  float sx = potiToSpeed(analogRead(POTI1));
-  float sy = potiToSpeed(analogRead(POTI2));
+  unsigned long now = millis();
+  float sx = (now < keyJogXUntil) ? keyJogXSpeed : potiToSpeed(analogRead(POTI1));
+  float sy = (now < keyJogYUntil) ? keyJogYSpeed : potiToSpeed(analogRead(POTI2));
   xStepper.setSpeed(sx);
   yStepper.setSpeed(sy);
   xStepper.runSpeed();
@@ -262,7 +270,49 @@ void saveCalibrationPoint() {
   }
 }
 
+// ─── WASD serial jog (calibration only) ──────────────────────────────────────
+//   A / D  →  X axis left / right
+//   W / S  →  Y axis up (top) / down (bottom)
+//   Space or Enter  →  save current position (same as physical button)
+void handleCalibrationSerial()
+{
+  while (Serial.available())
+  {
+    char c = (char)Serial.read();
+    unsigned long until = millis() + KEY_JOG_MS;
+    switch (c)
+    {
+    case 'a':
+    case 'A':
+      keyJogXSpeed = -JOG_MAX_SPEED;
+      keyJogXUntil = until;
+      break;
+    case 'd':
+    case 'D':
+      keyJogXSpeed = JOG_MAX_SPEED;
+      keyJogXUntil = until;
+      break;
+    case 'w':
+    case 'W':
+      keyJogYSpeed = -JOG_MAX_SPEED;
+      keyJogYUntil = until;
+      break;
+    case 's':
+    case 'S':
+      keyJogYSpeed = JOG_MAX_SPEED;
+      keyJogYUntil = until;
+      break;
+    case ' ':
+    case '\n':
+    case '\r':
+      saveCalibrationPoint();
+      break;
+    }
+  }
+}
+
 void handleCalibrationState() {
+  handleCalibrationSerial();
   jogMotors();
   if (checkButton()) saveCalibrationPoint();
   updateLedBlink();
@@ -419,7 +469,8 @@ void setup() {
 
   setBlinkTarget(1);
   Serial.println(F("LASER CANVAS v1.0"));
-  Serial.println(F("CAL: move to LEFT limit, press button"));
+  Serial.println(F("Jog: potis or WASD keys | Space/Enter = save point"));
+  Serial.println(F("CAL: move to LEFT limit, press button or Space"));
 }
 
 void loop() {
