@@ -1,12 +1,19 @@
 #include <AccelStepper.h>
 
 // RAMPS 1.4 X-axis pins for NEMA 17
+// #define X_STEP 54
+// #define X_DIR 55
+// #define X_ENABLE 38
+// #define Y_STEP 36
+// #define Y_DIR 34
+// #define Y_ENABLE 30
+
 #define X_STEP 54
 #define X_DIR 55
 #define X_ENABLE 38
-#define Y_STEP 36
-#define Y_DIR 34
-#define Y_ENABLE 30
+#define Y_STEP 60
+#define Y_DIR 61
+#define Y_ENABLE 56
 
 #define SENSOR_PIN 12
 #define POTI1 A4
