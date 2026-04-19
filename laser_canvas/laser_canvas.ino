@@ -1,12 +1,12 @@
 #include <AccelStepper.h>
 
 // ─── Hardware pins (RAMPS 1.4) ───────────────────────────────────────────────
-#define X_STEP    54
-#define X_DIR     55
-#define X_ENABLE  38
-#define Y_STEP 60
-#define Y_DIR 61
-#define Y_ENABLE 56
+#define Y_STEP    54
+#define Y_DIR     55
+#define Y_ENABLE  38
+#define X_STEP 60
+#define X_DIR 61
+#define X_ENABLE 56
 
 #define SENSOR_PIN  12   // button, INPUT_PULLUP → LOW when pressed
 #define POTI1       A4   // X-axis jog
@@ -40,6 +40,7 @@ long canvas_width_steps  = 0;
 long canvas_height_steps = 0;
 
 // ─── Laser ───────────────────────────────────────────────────────────────────
+const int CAL_LASER_POWER = 255; // dim pilot beam during calibration (0-255)
 int currentLaserPower = 0;
 
 // ─── Button debounce ─────────────────────────────────────────────────────────
@@ -171,8 +172,11 @@ float potiToSpeed(int raw) {
 
 void jogMotors() {
   unsigned long now = millis();
-  float sx = (now < keyJogXUntil) ? keyJogXSpeed : potiToSpeed(analogRead(POTI1));
-  float sy = (now < keyJogYUntil) ? keyJogYSpeed : potiToSpeed(analogRead(POTI2));
+  // POTI2 (A9) routes to whichever axis is being calibrated
+  bool potiDrivesX = (currentState == CALIBRATE_LEFT || currentState == CALIBRATE_RIGHT);
+  float potiSpeed = potiToSpeed(analogRead(POTI2));
+  float sx = (now < keyJogXUntil) ? keyJogXSpeed : (potiDrivesX ? potiSpeed : 0.0f);
+  float sy = (now < keyJogYUntil) ? keyJogYSpeed : (potiDrivesX ? 0.0f : potiSpeed);
   xStepper.setSpeed(sx);
   yStepper.setSpeed(sy);
   xStepper.runSpeed();
@@ -187,7 +191,7 @@ void jogMotors() {
 void restartCalibration() {
   xStepper.stop();
   yStepper.stop();
-  setLaser(0);
+  setLaser(CAL_LASER_POWER);
   currentState = CALIBRATE_LEFT;
   setBlinkTarget(1);
   Serial.println(F("CAL: move to LEFT limit, press button"));
@@ -303,8 +307,6 @@ void handleCalibrationSerial()
       keyJogYUntil = until;
       break;
     case ' ':
-    case '\n':
-    case '\r':
       saveCalibrationPoint();
       break;
     }
@@ -460,7 +462,7 @@ void setup() {
   digitalWrite(X_ENABLE, LOW);  // LOW = enabled on RAMPS
   digitalWrite(Y_ENABLE, LOW);
 
-  setLaser(0);
+  setLaser(CAL_LASER_POWER);
 
   xStepper.setMaxSpeed(JOG_MAX_SPEED);
   xStepper.setAcceleration(ACCELERATION);
