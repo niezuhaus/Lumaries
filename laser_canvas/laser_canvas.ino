@@ -17,7 +17,7 @@
 
 // ─── Motor constants ──────────────────────────────────────────────────────────
 const float JOG_MAX_SPEED = 100.0;  // steps/sec during calibration jog
-const float DRAW_MAX_SPEED = 100.0; // steps/sec during drawing moves
+const float DRAW_MAX_SPEED = 25.0;  // steps/sec during drawing moves (1/4 of jog)
 const float ACCELERATION = 1000.0;  // steps/s²
 const int POTI_MIN = 350;           // dead-zone lower bound
 const int POTI_MAX = 650;           // dead-zone upper bound
@@ -51,8 +51,9 @@ long canvas_width_steps = 0;
 long canvas_height_steps = 0;
 
 // ─── Laser ───────────────────────────────────────────────────────────────────
-const int CAL_LASER_POWER = 255; // dim pilot beam during calibration (0-255)
+const int CAL_LASER_POWER = 255; // ignored — poti controls actual brightness
 int currentLaserPower = 0;
+bool laserEnabled = false;
 
 // ─── Button debounce ─────────────────────────────────────────────────────────
 unsigned long lastButtonTime = 0;
@@ -100,10 +101,15 @@ AccelStepper yStepper(AccelStepper::DRIVER, X_STEP, X_DIR);
 //  LASER
 // ═══════════════════════════════════════════════════════════════════════════════
 
+void updateLaserPoti() {
+  currentLaserPower = map(analogRead(DREH_POTI), 0, 1023, 0, 255);
+  if (laserEnabled) analogWrite(LASER_PIN, currentLaserPower);
+}
+
 void setLaser(int power)
 {
-  currentLaserPower = constrain(power, 0, 255);
-  analogWrite(LASER_PIN, currentLaserPower);
+  laserEnabled = (power > 0);
+  analogWrite(LASER_PIN, laserEnabled ? currentLaserPower : 0);
 }
 
 // 3 quick laser blinks to confirm a calibration point was saved
@@ -490,6 +496,7 @@ void waitForMotors()
   {
     xStepper.run();
     yStepper.run();
+    updateLaserPoti();
   }
 }
 
@@ -675,6 +682,7 @@ void setup()
 
 void loop()
 {
+  updateLaserPoti();
   if (currentState != READY)
   {
     handleCalibrationState();
