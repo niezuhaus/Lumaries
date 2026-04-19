@@ -36,11 +36,12 @@ SystemState currentState = CALIBRATE_LEFT;
 // ─── Draw modes (active when READY) ──────────────────────────────────────────
 enum DrawMode
 {
-  MODE_OUTLINE, // continuously traces canvas border
-  MODE_SERIAL   // accepts M/L/P/H/S commands over serial
+  MODE_OUTLINE,  // continuously traces canvas border
+  MODE_CORNERS,  // random small 90° corner shapes
+  MODE_SERIAL    // accepts M/L/P/H/S commands over serial
 };
 DrawMode currentDrawMode = MODE_OUTLINE;
-const int DRAW_MODE_COUNT = 2;
+const int DRAW_MODE_COUNT = 3;
 
 // ─── Canvas geometry (filled after calibration) ───────────────────────────────
 long X_left = 0;
@@ -465,12 +466,9 @@ void setDrawMode(DrawMode m)
   currentDrawMode = m;
   switch (m)
   {
-  case MODE_OUTLINE:
-    Serial.println(F("MODE: OUTLINE"));
-    break;
-  case MODE_SERIAL:
-    Serial.println(F("MODE: SERIAL"));
-    break;
+  case MODE_OUTLINE:  Serial.println(F("MODE: OUTLINE"));  break;
+  case MODE_CORNERS:  Serial.println(F("MODE: CORNERS"));  break;
+  case MODE_SERIAL:   Serial.println(F("MODE: SERIAL"));   break;
   }
 }
 
@@ -523,6 +521,14 @@ void drawLine(float x0, float y0, float x1, float y1, int power)
   drawToCanvas(x1, y1, power);
 }
 
+// Move to position with laser already on — used for multi-segment shapes
+void drawSegTo(float nx, float ny)
+{
+  xStepper.moveTo(normToStepsX(nx));
+  yStepper.moveTo(normToStepsY(ny));
+  waitForMotors();
+}
+
 // Trace the full canvas rectangle once with the laser on (called after calibration)
 void traceCanvasOutline()
 {
@@ -540,6 +546,32 @@ void traceCanvasOutline()
   xStepper.moveTo(normToStepsX(0.0f));
   yStepper.moveTo(normToStepsY(0.0f));
   waitForMotors(); // close
+  setLaser(0);
+}
+
+// Draw one random 90° corner shape anywhere on the canvas
+void drawRandomCorner()
+{
+  // Arm lengths: 30–200 canvas units (3–20 % of canvas)
+  int lenH = random(30, 201);
+  int lenV = random(30, 201);
+
+  // Vertex position — kept away from edges so arms have room
+  int vx = random(lenH, 1001 - lenH);
+  int vy = random(lenV, 1001 - lenV);
+
+  // Random direction for each arm independently
+  int dx = (random(2) == 0) ?  lenH : -lenH;
+  int dy = (random(2) == 0) ?  lenV : -lenV;
+
+  int startX = constrain(vx + dx, 0, 1000);
+  int endY   = constrain(vy + dy, 0, 1000);
+
+  // Move to start of horizontal arm, then draw to vertex, then draw vertical arm
+  moveToCanvas(startX / 1000.0f, vy / 1000.0f);
+  setLaser(currentLaserPower);
+  drawSegTo(vx / 1000.0f, vy / 1000.0f);   // → vertex
+  drawSegTo(vx / 1000.0f, endY / 1000.0f); // → end of vertical arm
   setLaser(0);
 }
 
@@ -694,6 +726,9 @@ void loop()
     {
     case MODE_OUTLINE:
       traceCanvasOutline();
+      break;
+    case MODE_CORNERS:
+      drawRandomCorner();
       break;
     case MODE_SERIAL:
       handleSerialInput();
