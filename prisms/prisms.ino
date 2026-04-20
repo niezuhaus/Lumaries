@@ -16,9 +16,9 @@
 #define Y_ENABLE 56
 
 #define SENSOR_PIN 12
-#define POTI1 A3
-#define POTI2 A9
-#define DREH_POTI A4
+#define POTI1 A10
+#define POTI2 A12
+#define DREH_POTI A5
 #define LASER_PIN 45
 
 const int stepsPerRevolution = 200;  // NEMA 17 (1.8° per step)
@@ -73,8 +73,7 @@ void loop() {
   if (deafSteps > 0) {
     deafSteps--;
   } else {
-    laser = min(max(map(drehPoti, 100, 900, 255, 0), 0), 255);
-    laser = 255;
+    laser = min(max(map(drehPoti, 50, 1000, 255, 0), 0), 255);
 
     if (potiIn > potiMax) {
       speed1 = map(potiIn, potiMax, 1024, minSpeed, maxSpeed);
@@ -85,7 +84,6 @@ void loop() {
     } else {
       xStepper.setSpeed(0);  // Stopp in der Mitte
     }
-
     if (potiIn2 > potiMax) {
       speed2 = map(potiIn2, potiMax, 1024, minSpeed, maxSpeed);
       yStepper.setSpeed(speed2);  // Positiv = vorwärts
