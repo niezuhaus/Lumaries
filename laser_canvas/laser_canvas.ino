@@ -16,11 +16,11 @@
 #define LASER_PIN 45  // PWM
 
 // ─── Motor constants ──────────────────────────────────────────────────────────
-const float JOG_MAX_SPEED = 100.0;  // steps/sec during calibration jog
-const float DRAW_MAX_SPEED = 25.0;  // steps/sec during drawing moves (1/4 of jog)
-const float ACCELERATION = 1000.0;  // steps/s²
-const int POTI_MIN = 350;           // dead-zone lower bound
-const int POTI_MAX = 650;           // dead-zone upper bound
+const float JOG_MAX_SPEED = 100.0; // steps/sec during calibration jog
+const float DRAW_MAX_SPEED = 25.0; // steps/sec during drawing moves (1/4 of jog)
+const float ACCELERATION = 1000.0; // steps/s²
+const int POTI_MIN = 350;          // dead-zone lower bound
+const int POTI_MAX = 650;          // dead-zone upper bound
 
 // ─── State machine ────────────────────────────────────────────────────────────
 enum SystemState
@@ -36,11 +36,11 @@ SystemState currentState = CALIBRATE_LEFT;
 // ─── Draw modes (active when READY) ──────────────────────────────────────────
 enum DrawMode
 {
-  MODE_OUTLINE,  // continuously traces canvas border
-  MODE_CORNERS,  // random small 90° corner shapes
-  MODE_LETTERS,  // random German characters at random positions
-  MODE_MANUAL,   // poti/keypad jog with laser on — freehand drawing
-  MODE_SERIAL    // accepts M/L/P/H/S commands over serial
+  MODE_OUTLINE, // continuously traces canvas border
+  MODE_CORNERS, // random small 90° corner shapes
+  MODE_LETTERS, // random German characters at random positions
+  MODE_MANUAL,  // poti/keypad jog with laser on — freehand drawing
+  MODE_SERIAL   // accepts M/L/P/H/S commands over serial
 };
 DrawMode currentDrawMode = MODE_OUTLINE;
 const int DRAW_MODE_COUNT = 5;
@@ -104,54 +104,55 @@ AccelStepper yStepper(AccelStepper::DRIVER, X_STEP, X_DIR);
 //  STROKE FONT  (5-wide × 7-tall cell, y=0 at top)
 //  Pairs of int8_t (x,y) | -1,-1 = pen-up | 127,127 = end of glyph
 // ═══════════════════════════════════════════════════════════════════════════════
-const int8_t F_A[]  PROGMEM = { 0,6, 2,0, 4,6, -1,-1, 1,3, 3,3, 127,127 };
-const int8_t F_B[]  PROGMEM = { 0,6, 0,0, 3,0, 4,1, 4,2, 3,3, 4,4, 4,5, 3,6, 0,6, -1,-1, 0,3, 3,3, 127,127 };
-const int8_t F_C[]  PROGMEM = { 4,1, 3,0, 1,0, 0,1, 0,5, 1,6, 3,6, 4,5, 127,127 };
-const int8_t F_D[]  PROGMEM = { 0,0, 0,6, 3,6, 4,5, 4,1, 3,0, 0,0, 127,127 };
-const int8_t F_E[]  PROGMEM = { 4,0, 0,0, 0,6, 4,6, -1,-1, 0,3, 3,3, 127,127 };
-const int8_t F_F[]  PROGMEM = { 4,0, 0,0, 0,6, -1,-1, 0,3, 3,3, 127,127 };
-const int8_t F_G[]  PROGMEM = { 4,1, 3,0, 1,0, 0,1, 0,5, 1,6, 3,6, 4,5, 4,3, 2,3, 127,127 };
-const int8_t F_H[]  PROGMEM = { 0,0, 0,6, -1,-1, 4,0, 4,6, -1,-1, 0,3, 4,3, 127,127 };
-const int8_t F_I[]  PROGMEM = { 1,0, 3,0, -1,-1, 2,0, 2,6, -1,-1, 1,6, 3,6, 127,127 };
-const int8_t F_J[]  PROGMEM = { 1,0, 3,0, -1,-1, 3,0, 3,5, 2,6, 1,6, 0,5, 127,127 };
-const int8_t F_K[]  PROGMEM = { 0,0, 0,6, -1,-1, 4,0, 0,3, 4,6, 127,127 };
-const int8_t F_L[]  PROGMEM = { 0,0, 0,6, 4,6, 127,127 };
-const int8_t F_M[]  PROGMEM = { 0,6, 0,0, 2,3, 4,0, 4,6, 127,127 };
-const int8_t F_N[]  PROGMEM = { 0,6, 0,0, 4,6, 4,0, 127,127 };
-const int8_t F_O[]  PROGMEM = { 1,0, 3,0, 4,1, 4,5, 3,6, 1,6, 0,5, 0,1, 1,0, 127,127 };
-const int8_t F_P[]  PROGMEM = { 0,6, 0,0, 3,0, 4,1, 4,2, 3,3, 0,3, 127,127 };
-const int8_t F_Q[]  PROGMEM = { 1,0, 3,0, 4,1, 4,5, 3,6, 1,6, 0,5, 0,1, 1,0, -1,-1, 2,4, 4,6, 127,127 };
-const int8_t F_R[]  PROGMEM = { 0,6, 0,0, 3,0, 4,1, 4,2, 3,3, 0,3, -1,-1, 2,3, 4,6, 127,127 };
-const int8_t F_S[]  PROGMEM = { 4,1, 3,0, 1,0, 0,1, 0,2, 1,3, 3,3, 4,4, 4,5, 3,6, 1,6, 0,5, 127,127 };
-const int8_t F_T[]  PROGMEM = { 0,0, 4,0, -1,-1, 2,0, 2,6, 127,127 };
-const int8_t F_U[]  PROGMEM = { 0,0, 0,5, 1,6, 3,6, 4,5, 4,0, 127,127 };
-const int8_t F_V[]  PROGMEM = { 0,0, 2,6, 4,0, 127,127 };
-const int8_t F_W[]  PROGMEM = { 0,0, 1,6, 2,3, 3,6, 4,0, 127,127 };
-const int8_t F_X[]  PROGMEM = { 0,0, 4,6, -1,-1, 4,0, 0,6, 127,127 };
-const int8_t F_Y[]  PROGMEM = { 0,0, 2,3, 4,0, -1,-1, 2,3, 2,6, 127,127 };
-const int8_t F_Z[]  PROGMEM = { 0,0, 4,0, 0,6, 4,6, 127,127 };
+const int8_t F_A[] PROGMEM = {0, 6, 2, 0, 4, 6, -1, -1, 1, 3, 3, 3, 127, 127};
+const int8_t F_B[] PROGMEM = {0, 6, 0, 0, 3, 0, 4, 1, 4, 2, 3, 3, 4, 4, 4, 5, 3, 6, 0, 6, -1, -1, 0, 3, 3, 3, 127, 127};
+const int8_t F_C[] PROGMEM = {4, 1, 3, 0, 1, 0, 0, 1, 0, 5, 1, 6, 3, 6, 4, 5, 127, 127};
+const int8_t F_D[] PROGMEM = {0, 0, 0, 6, 3, 6, 4, 5, 4, 1, 3, 0, 0, 0, 127, 127};
+const int8_t F_E[] PROGMEM = {4, 0, 0, 0, 0, 6, 4, 6, -1, -1, 0, 3, 3, 3, 127, 127};
+const int8_t F_F[] PROGMEM = {4, 0, 0, 0, 0, 6, -1, -1, 0, 3, 3, 3, 127, 127};
+const int8_t F_G[] PROGMEM = {4, 1, 3, 0, 1, 0, 0, 1, 0, 5, 1, 6, 3, 6, 4, 5, 4, 3, 2, 3, 127, 127};
+const int8_t F_H[] PROGMEM = {0, 0, 0, 6, -1, -1, 4, 0, 4, 6, -1, -1, 0, 3, 4, 3, 127, 127};
+const int8_t F_I[] PROGMEM = {1, 0, 3, 0, -1, -1, 2, 0, 2, 6, -1, -1, 1, 6, 3, 6, 127, 127};
+const int8_t F_J[] PROGMEM = {1, 0, 3, 0, -1, -1, 3, 0, 3, 5, 2, 6, 1, 6, 0, 5, 127, 127};
+const int8_t F_K[] PROGMEM = {0, 0, 0, 6, -1, -1, 4, 0, 0, 3, 4, 6, 127, 127};
+const int8_t F_L[] PROGMEM = {0, 0, 0, 6, 4, 6, 127, 127};
+const int8_t F_M[] PROGMEM = {0, 6, 0, 0, 2, 3, 4, 0, 4, 6, 127, 127};
+const int8_t F_N[] PROGMEM = {0, 6, 0, 0, 4, 6, 4, 0, 127, 127};
+const int8_t F_O[] PROGMEM = {1, 0, 3, 0, 4, 1, 4, 5, 3, 6, 1, 6, 0, 5, 0, 1, 1, 0, 127, 127};
+const int8_t F_P[] PROGMEM = {0, 6, 0, 0, 3, 0, 4, 1, 4, 2, 3, 3, 0, 3, 127, 127};
+const int8_t F_Q[] PROGMEM = {1, 0, 3, 0, 4, 1, 4, 5, 3, 6, 1, 6, 0, 5, 0, 1, 1, 0, -1, -1, 2, 4, 4, 6, 127, 127};
+const int8_t F_R[] PROGMEM = {0, 6, 0, 0, 3, 0, 4, 1, 4, 2, 3, 3, 0, 3, -1, -1, 2, 3, 4, 6, 127, 127};
+const int8_t F_S[] PROGMEM = {4, 1, 3, 0, 1, 0, 0, 1, 0, 2, 1, 3, 3, 3, 4, 4, 4, 5, 3, 6, 1, 6, 0, 5, 127, 127};
+const int8_t F_T[] PROGMEM = {0, 0, 4, 0, -1, -1, 2, 0, 2, 6, 127, 127};
+const int8_t F_U[] PROGMEM = {0, 0, 0, 5, 1, 6, 3, 6, 4, 5, 4, 0, 127, 127};
+const int8_t F_V[] PROGMEM = {0, 0, 2, 6, 4, 0, 127, 127};
+const int8_t F_W[] PROGMEM = {0, 0, 1, 6, 2, 3, 3, 6, 4, 0, 127, 127};
+const int8_t F_X[] PROGMEM = {0, 0, 4, 6, -1, -1, 4, 0, 0, 6, 127, 127};
+const int8_t F_Y[] PROGMEM = {0, 0, 2, 3, 4, 0, -1, -1, 2, 3, 2, 6, 127, 127};
+const int8_t F_Z[] PROGMEM = {0, 0, 4, 0, 0, 6, 4, 6, 127, 127};
 // Umlauts: body squished to y 1-6, umlaut dots as short ticks at y 0
-const int8_t F_AE[] PROGMEM = { 1,0, 2,0, -1,-1, 3,0, 4,0, -1,-1, 0,6, 2,1, 4,6, -1,-1, 1,4, 3,4, 127,127 };
-const int8_t F_OE[] PROGMEM = { 1,0, 2,0, -1,-1, 3,0, 4,0, -1,-1, 1,1, 3,1, 4,2, 4,5, 3,6, 1,6, 0,5, 0,2, 1,1, 127,127 };
-const int8_t F_UE[] PROGMEM = { 1,0, 2,0, -1,-1, 3,0, 4,0, -1,-1, 0,1, 0,5, 1,6, 3,6, 4,5, 4,1, 127,127 };
-const int8_t F_SS[] PROGMEM = { 0,6, 0,0, 2,0, 4,1, 4,2, 3,3, 4,4, 4,5, 2,6, 0,6, -1,-1, 0,3, 3,3, 127,127 };
+const int8_t F_AE[] PROGMEM = {1, 0, 2, 0, -1, -1, 3, 0, 4, 0, -1, -1, 0, 6, 2, 1, 4, 6, -1, -1, 1, 4, 3, 4, 127, 127};
+const int8_t F_OE[] PROGMEM = {1, 0, 2, 0, -1, -1, 3, 0, 4, 0, -1, -1, 1, 1, 3, 1, 4, 2, 4, 5, 3, 6, 1, 6, 0, 5, 0, 2, 1, 1, 127, 127};
+const int8_t F_UE[] PROGMEM = {1, 0, 2, 0, -1, -1, 3, 0, 4, 0, -1, -1, 0, 1, 0, 5, 1, 6, 3, 6, 4, 5, 4, 1, 127, 127};
+const int8_t F_SS[] PROGMEM = {0, 6, 0, 0, 2, 0, 4, 1, 4, 2, 3, 3, 4, 4, 4, 5, 2, 6, 0, 6, -1, -1, 0, 3, 3, 3, 127, 127};
 
 // Lookup: 0-25 = A-Z, 26 = Ä, 27 = Ö, 28 = Ü, 29 = ß
-const int8_t* const FONT_TABLE[] PROGMEM = {
-  F_A, F_B, F_C, F_D, F_E, F_F, F_G, F_H, F_I, F_J,
-  F_K, F_L, F_M, F_N, F_O, F_P, F_Q, F_R, F_S, F_T,
-  F_U, F_V, F_W, F_X, F_Y, F_Z,
-  F_AE, F_OE, F_UE, F_SS
-};
+const int8_t *const FONT_TABLE[] PROGMEM = {
+    F_A, F_B, F_C, F_D, F_E, F_F, F_G, F_H, F_I, F_J,
+    F_K, F_L, F_M, F_N, F_O, F_P, F_Q, F_R, F_S, F_T,
+    F_U, F_V, F_W, F_X, F_Y, F_Z,
+    F_AE, F_OE, F_UE, F_SS};
 const int FONT_TABLE_SIZE = 30;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  LASER
 // ═══════════════════════════════════════════════════════════════════════════════
 
-void updateLaserPoti() {
+void updateLaserPoti()
+{
   currentLaserPower = map(analogRead(DREH_POTI), 0, 1023, 0, 255);
-  if (laserEnabled) analogWrite(LASER_PIN, currentLaserPower);
+  if (laserEnabled)
+    analogWrite(LASER_PIN, currentLaserPower);
 }
 
 void setLaser(int power)
@@ -443,11 +444,14 @@ void handleCalibrationSerial()
   }
 }
 
-// ─── Keypad jog (calibration only) ───────────────────────────────────────────
-//   2=up  9=down  4=left  6=right  5=save point
+// ─── Keypad ───────────────────────────────────────────────────────────────────
+// Calibration:  2/4/6/8 jog | 5 save point | A restart
+// READY manual: 2/4/6/8 jog | 5 pen toggle
+// READY other:  1→OUTLINE  2→CORNERS  3→LETTERS  4→MANUAL  5→SERIAL
+//               A restart calibration | # cycle modes
 void handleKeypad()
 {
-  keypad.getKeys(); // update key states; return value ignored so HOLD is always checked
+  keypad.getKeys();
   for (int i = 0; i < LIST_MAX; i++)
   {
     if (keypad.key[i].kchar == NO_KEY)
@@ -457,39 +461,73 @@ void handleKeypad()
       continue;
     char k = keypad.key[i].kchar;
     unsigned long until = millis() + KEY_JOG_MS;
+
+    bool inManual = (currentState == READY && currentDrawMode == MODE_MANUAL);
+    bool inCalib = (currentState != READY);
+
+    // Jog keys — act on PRESSED and HOLD during calibration or manual draw.
+    // 'continue' skips the mode-select logic below for these keys.
+    if (inCalib || inManual)
+    {
+      switch (k)
+      {
+      case '4':
+        keyJogXSpeed = -JOG_MAX_SPEED;
+        keyJogXUntil = until;
+        continue;
+      case '6':
+        keyJogXSpeed = JOG_MAX_SPEED;
+        keyJogXUntil = until;
+        continue;
+      case '2':
+        keyJogYSpeed = -JOG_MAX_SPEED;
+        keyJogYUntil = until;
+        continue;
+      case '8':
+        keyJogYSpeed = JOG_MAX_SPEED;
+        keyJogYUntil = until;
+        continue;
+      }
+    }
+
+    if (s != PRESSED)
+      continue; // mode-select and actions: PRESSED only
+
+    if (inCalib)
+    {
+      if (k == '5')
+        saveCalibrationPoint();
+      if (k == 'A')
+        restartCalibration();
+      continue;
+    }
+
+    // READY state — number keys select modes directly
     switch (k)
     {
-    case '4':
-      keyJogXSpeed = -JOG_MAX_SPEED;
-      keyJogXUntil = until;
-      break;
-    case '6':
-      keyJogXSpeed = JOG_MAX_SPEED;
-      keyJogXUntil = until;
+    case '1':
+      setDrawMode(MODE_OUTLINE);
       break;
     case '2':
-      keyJogYSpeed = -JOG_MAX_SPEED; // logical up
-      keyJogYUntil = until;
+      setDrawMode(MODE_CORNERS);
       break;
-    case '8':
-      keyJogYSpeed = JOG_MAX_SPEED; // logical down
-      keyJogYUntil = until;
+    case '3':
+      setDrawMode(MODE_LETTERS);
+      break;
+    case '4':
+      setDrawMode(MODE_MANUAL);
       break;
     case '5':
-      if (s == PRESSED) {
-        if (currentState != READY)
-          saveCalibrationPoint();
-        else if (currentDrawMode == MODE_MANUAL)
-          setLaser(laserEnabled ? 0 : currentLaserPower);  // pen up / pen down
-      }
+      if (inManual)
+        setLaser(laserEnabled ? 0 : currentLaserPower);
+      else
+        setDrawMode(MODE_SERIAL);
       break;
-    case '0':
-      if (s == PRESSED)
-        restartCalibration();
+    case 'A':
+      restartCalibration();
       break;
     case '#':
-      if (s == PRESSED && currentState == READY)
-        setDrawMode((DrawMode)((currentDrawMode + 1) % DRAW_MODE_COUNT));
+      setDrawMode((DrawMode)((currentDrawMode + 1) % DRAW_MODE_COUNT));
       break;
     }
   }
@@ -517,15 +555,23 @@ void setDrawMode(DrawMode m)
   currentDrawMode = m;
   switch (m)
   {
-  case MODE_OUTLINE:  Serial.println(F("MODE: OUTLINE"));  break;
-  case MODE_CORNERS:  Serial.println(F("MODE: CORNERS"));  break;
-  case MODE_LETTERS:  Serial.println(F("MODE: LETTERS"));  break;
+  case MODE_OUTLINE:
+    Serial.println(F("MODE: OUTLINE"));
+    break;
+  case MODE_CORNERS:
+    Serial.println(F("MODE: CORNERS"));
+    break;
+  case MODE_LETTERS:
+    Serial.println(F("MODE: LETTERS"));
+    break;
   case MODE_MANUAL:
     Serial.println(F("MODE: MANUAL"));
-    moveToCanvas(0.5f, 0.5f);   // start at canvas centre
+    moveToCanvas(0.5f, 0.5f); // start at canvas centre
     setLaser(currentLaserPower);
     break;
-  case MODE_SERIAL:   Serial.println(F("MODE: SERIAL"));   break;
+  case MODE_SERIAL:
+    Serial.println(F("MODE: SERIAL"));
+    break;
   }
 }
 
@@ -587,20 +633,36 @@ void drawSegTo(float nx, float ny)
 }
 
 // Trace the full canvas rectangle once. Checks for mode changes after each side.
-#define OUTLINE_CHECK() do { handleKeypad(); if (currentDrawMode != MODE_OUTLINE) { setLaser(0); return; } } while(0)
+#define OUTLINE_CHECK()                  \
+  do                                     \
+  {                                      \
+    handleKeypad();                      \
+    if (currentDrawMode != MODE_OUTLINE) \
+    {                                    \
+      setLaser(0);                       \
+      return;                            \
+    }                                    \
+  } while (0)
 
 void traceCanvasOutline()
 {
   moveToCanvas(0.0f, 0.0f);
   setLaser(currentLaserPower);
-  xStepper.moveTo(normToStepsX(1.0f)); yStepper.moveTo(normToStepsY(0.0f));
-  waitForMotors(); OUTLINE_CHECK();  // → top-right
-  xStepper.moveTo(normToStepsX(1.0f)); yStepper.moveTo(normToStepsY(1.0f));
-  waitForMotors(); OUTLINE_CHECK();  // → bottom-right
-  xStepper.moveTo(normToStepsX(0.0f)); yStepper.moveTo(normToStepsY(1.0f));
-  waitForMotors(); OUTLINE_CHECK();  // → bottom-left
-  xStepper.moveTo(normToStepsX(0.0f)); yStepper.moveTo(normToStepsY(0.0f));
-  waitForMotors();                   // → top-left (close)
+  xStepper.moveTo(normToStepsX(1.0f));
+  yStepper.moveTo(normToStepsY(0.0f));
+  waitForMotors();
+  OUTLINE_CHECK(); // → top-right
+  xStepper.moveTo(normToStepsX(1.0f));
+  yStepper.moveTo(normToStepsY(1.0f));
+  waitForMotors();
+  OUTLINE_CHECK(); // → bottom-right
+  xStepper.moveTo(normToStepsX(0.0f));
+  yStepper.moveTo(normToStepsY(1.0f));
+  waitForMotors();
+  OUTLINE_CHECK(); // → bottom-left
+  xStepper.moveTo(normToStepsX(0.0f));
+  yStepper.moveTo(normToStepsY(0.0f));
+  waitForMotors(); // → top-left (close)
   setLaser(0);
 }
 
@@ -616,11 +678,11 @@ void drawRandomCorner()
   int vy = random(lenV, 1001 - lenV);
 
   // Random direction for each arm independently
-  int dx = (random(2) == 0) ?  lenH : -lenH;
-  int dy = (random(2) == 0) ?  lenV : -lenV;
+  int dx = (random(2) == 0) ? lenH : -lenH;
+  int dy = (random(2) == 0) ? lenV : -lenV;
 
   int startX = constrain(vx + dx, 0, 1000);
-  int endY   = constrain(vy + dy, 0, 1000);
+  int endY = constrain(vy + dy, 0, 1000);
 
   // Move to start of horizontal arm, then draw to vertex, then draw vertical arm
   moveToCanvas(startX / 1000.0f, vy / 1000.0f);
@@ -636,36 +698,47 @@ void drawRandomCorner()
 
 // Return PROGMEM pointer for a character, or nullptr if unsupported.
 // Uppercase and lowercase map to the same glyphs (A-Z).
-const int8_t* getGlyph(char c)
+const int8_t *getGlyph(char c)
 {
   int idx = -1;
-  if      (c >= 'A' && c <= 'Z')          idx = c - 'A';
-  else if (c >= 'a' && c <= 'z')          idx = c - 'a';
-  else if (c == (char)0xC4 || c == (char)0xE4) idx = 26; // Ä / ä
-  else if (c == (char)0xD6 || c == (char)0xF6) idx = 27; // Ö / ö
-  else if (c == (char)0xDC || c == (char)0xFC) idx = 28; // Ü / ü
-  else if (c == (char)0xDF)               idx = 29;      // ß
-  if (idx < 0) return nullptr;
-  return (const int8_t*)pgm_read_word(&FONT_TABLE[idx]);
+  if (c >= 'A' && c <= 'Z')
+    idx = c - 'A';
+  else if (c >= 'a' && c <= 'z')
+    idx = c - 'a';
+  else if (c == (char)0xC4 || c == (char)0xE4)
+    idx = 26; // Ä / ä
+  else if (c == (char)0xD6 || c == (char)0xF6)
+    idx = 27; // Ö / ö
+  else if (c == (char)0xDC || c == (char)0xFC)
+    idx = 28; // Ü / ü
+  else if (c == (char)0xDF)
+    idx = 29; // ß
+  if (idx < 0)
+    return nullptr;
+  return (const int8_t *)pgm_read_word(&FONT_TABLE[idx]);
 }
 
 // Draw a single glyph.
 //   ox, oy : canvas origin of the character cell (0.0–1.0)
 //   scale  : canvas units per font grid unit (e.g. 0.03 → char ~15% wide)
-void drawGlyph(float ox, float oy, float scale, const int8_t* glyph)
+void drawGlyph(float ox, float oy, float scale, const int8_t *glyph)
 {
-  if (!glyph) return;
+  if (!glyph)
+    return;
   bool needsMove = true;
   int idx = 0;
   setLaser(0);
 
-  while (true) {
+  while (true)
+  {
     int8_t gx = (int8_t)pgm_read_byte(&glyph[idx]);
     int8_t gy = (int8_t)pgm_read_byte(&glyph[idx + 1]);
     idx += 2;
 
-    if (gx == 127) break;           // end of glyph
-    if (gx == -1) {                  // pen up — lift laser, next point is a move
+    if (gx == 127)
+      break; // end of glyph
+    if (gx == -1)
+    { // pen up — lift laser, next point is a move
       setLaser(0);
       needsMove = true;
       continue;
@@ -674,11 +747,15 @@ void drawGlyph(float ox, float oy, float scale, const int8_t* glyph)
     float cx = ox + gx * scale;
     float cy = oy + gy * scale;
 
-    if (needsMove) {
+    if (needsMove)
+    {
       moveToCanvas(cx, cy);
       needsMove = false;
-    } else {
-      if (!laserEnabled) setLaser(currentLaserPower);
+    }
+    else
+    {
+      if (!laserEnabled)
+        setLaser(currentLaserPower);
       drawSegTo(cx, cy);
     }
   }
@@ -701,13 +778,13 @@ void drawRandomLetter()
 
   // Pick from the full German set (A-Z + Ä Ö Ü ß)
   int idx = random(FONT_TABLE_SIZE);
-  drawGlyph(ox, oy, scale, (const int8_t*)pgm_read_word(&FONT_TABLE[idx]));
+  drawGlyph(ox, oy, scale, (const int8_t *)pgm_read_word(&FONT_TABLE[idx]));
 }
 
 // Freehand draw: poti/keypad jog with laser on. '5' toggles pen up/down.
 void handleManualMode()
 {
-  jogMotors();  // velocity jog — same as calibration phase
+  jogMotors(); // velocity jog — same as calibration phase
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
