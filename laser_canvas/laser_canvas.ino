@@ -796,6 +796,12 @@ void drawRandomLetter()
 
   // Pick from the full German set (A-Z + Ä Ö Ü ß)
   int idx = random(FONT_TABLE_SIZE);
+  const char *LETTER_NAMES[] = {
+    "A","B","C","D","E","F","G","H","I","J","K","L","M",
+    "N","O","P","Q","R","S","T","U","V","W","X","Y","Z",
+    "Ä","Ö","Ü","ß"
+  };
+  Serial.println(LETTER_NAMES[idx]);
   drawGlyph(ox, oy, scale, (const int8_t *)pgm_read_word(&FONT_TABLE[idx]));
 }
 
@@ -956,6 +962,13 @@ void drawMorseMode()
 {
   int wi = random(MORSE_WORD_COUNT);
   const char *word = (const char *)pgm_read_word(&MORSE_WORDS[wi]);
+  Serial.print(F("MORSE: "));
+  for (uint8_t i = 0;; i++) {
+    char c = (char)pgm_read_byte(&word[i]);
+    if (c == '\0') break;
+    Serial.print(c);
+  }
+  Serial.println();
   float totalW = morseWordWidth(word);
   float maxOx = 1.0f - totalW;
   if (maxOx < 0.0f)
