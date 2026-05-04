@@ -23,8 +23,7 @@
 // ╠═══════════════════════════════════════════════════════════════════════════╣
 // ║  MOTORS                                                                   ║
 const float JOG_MAX_SPEED  = 100.0;  // steps/sec — calibration jogging
-const float DRAW_MAX_SPEED =  25.0;  // steps/sec — detailed drawing (letters, morse, corners)
-const float OUTLINE_SPEED  = 100.0;  // steps/sec — outline / circle (long straight runs)
+const float DRAW_MAX_SPEED =  25.0;  // steps/sec — detailed drawing (letters, corners)
 const float ACCELERATION   = 1000.0; // steps/s²  — applies to all modes
 const int   POTI_MIN       = 350;    // joystick dead-zone lower bound (0–1023)
 const int   POTI_MAX       = 650;    // joystick dead-zone upper bound (0–1023)
@@ -40,18 +39,9 @@ const uint8_t  PLAYBACK_MAX_NOISE = 80; // max position jitter for oldest record
 const int CORNER_LEN_MIN = 30;  // min arm length (0–1000 canvas units)
 const int CORNER_LEN_MAX = 200; // max arm length
 // ╠═══════════════════════════════════════════════════════════════════════════╣
-// ║  LETTERS / MORSE MODE                                                     ║
+// ║  LETTERS MODE                                                             ║
 const int   LETTER_SCALE_MIN = 15;  // min glyph scale (÷1000 → canvas fraction)
 const int   LETTER_SCALE_MAX = 55;  // max glyph scale
-const int   LETTER_Y_MARGIN  = 50;  // top/bottom margin for random letter placement (0–1000)
-const float MRS_DOT  = 0.015f;      // dot segment length (canvas fraction)
-const float MRS_DASH = 0.045f;      // dash segment length
-const float MRS_EGAP = 0.008f;      // gap between symbols within one letter
-const float MRS_LGAP = 0.022f;      // gap between letters
-// ╠═══════════════════════════════════════════════════════════════════════════╣
-// ║  CIRCLE MODE                                                              ║
-const int   CIRCLE_SEGMENTS = 24;   // polygon approximation steps (higher = smoother)
-const float CIRCLE_RADIUS   = 0.38f;// radius as fraction of canvas (0.0–0.5)
 // ╠═══════════════════════════════════════════════════════════════════════════╣
 // ║  DAY/NIGHT MODE                                                           ║
 const uint32_t DN_LASER_MS = 5UL * 60UL * 1000UL; // ms of laser drawing per cycle (5 min)
@@ -80,14 +70,11 @@ enum DrawMode
   MODE_CORNERS,  // 1 — random small 90° corner shapes
   MODE_MANUAL,   // 2 — poti jog with laser on — freehand drawing
   MODE_PLAYBACK, // 3 — replay stored recordings in sequence
-  MODE_OUTLINE,  // 4 — continuously traces canvas border
-  MODE_LETTERS,  // 5 — random German characters at random positions
-  MODE_CIRCLE,   // 6 — continuous circle in canvas centre
-  MODE_MORSE,    // 7 — draws morse-coded words at random positions
-  MODE_DAYNIGHT  // 8 — 5-min laser drawing / 1-min sun DMX cycle
+  MODE_LETTERS,  // 4 — random German characters at random positions
+  MODE_DAYNIGHT  // 5 — 5-min laser drawing / 1-min sun DMX cycle
 };
 DrawMode currentDrawMode = MODE_CORNERS;
-const int DRAW_MODE_COUNT = 8;
+const int DRAW_MODE_COUNT = 5;
 
 // ─── Canvas geometry (filled after calibration) ───────────────────────────────
 long X_left = 0;
@@ -191,59 +178,6 @@ const int FONT_TABLE_SIZE = 30;
 const int8_t FONT_CELL_W = 8;  // x range 0..8
 const int8_t FONT_CELL_H = 12; // y range 0..12
 
-// ═══════════════════════════════════════════════════════════════════════════════
-//  MORSE CODE DATA  (PROGMEM)
-//  Alphabet: '.' = dot, '-' = dash, null-terminated strings
-// ═══════════════════════════════════════════════════════════════════════════════
-const char MC_A[] PROGMEM = ".-";
-const char MC_B[] PROGMEM = "-...";
-const char MC_C[] PROGMEM = "-.-.";
-const char MC_D[] PROGMEM = "-..";
-const char MC_E[] PROGMEM = ".";
-const char MC_F[] PROGMEM = "..-.";
-const char MC_G[] PROGMEM = "--.";
-const char MC_H[] PROGMEM = "....";
-const char MC_I[] PROGMEM = "..";
-const char MC_J[] PROGMEM = ".---";
-const char MC_K[] PROGMEM = "-.-";
-const char MC_L[] PROGMEM = ".-..";
-const char MC_M[] PROGMEM = "--";
-const char MC_N[] PROGMEM = "-.";
-const char MC_O[] PROGMEM = "---";
-const char MC_P[] PROGMEM = ".--.";
-const char MC_Q[] PROGMEM = "--.-";
-const char MC_R[] PROGMEM = ".-.";
-const char MC_S[] PROGMEM = "...";
-const char MC_T[] PROGMEM = "-";
-const char MC_U[] PROGMEM = "..-";
-const char MC_V[] PROGMEM = "...-";
-const char MC_W[] PROGMEM = ".--";
-const char MC_X[] PROGMEM = "-..-";
-const char MC_Y[] PROGMEM = "-.--";
-const char MC_Z[] PROGMEM = "--..";
-
-const char *const MORSE_ABC[] PROGMEM = {
-    MC_A, MC_B, MC_C, MC_D, MC_E, MC_F, MC_G, MC_H, MC_I, MC_J,
-    MC_K, MC_L, MC_M, MC_N, MC_O, MC_P, MC_Q, MC_R, MC_S, MC_T,
-    MC_U, MC_V, MC_W, MC_X, MC_Y, MC_Z};
-
-const char MW_0[] PROGMEM = "LICHT";
-const char MW_1[] PROGMEM = "LASER";
-const char MW_2[] PROGMEM = "KUNST";
-const char MW_3[] PROGMEM = "RAUM";
-const char MW_4[] PROGMEM = "WELT";
-const char MW_5[] PROGMEM = "NACHT";
-const char MW_6[] PROGMEM = "TAG";
-const char MW_7[] PROGMEM = "FORM";
-const char MW_8[] PROGMEM = "LINIE";
-const char MW_9[] PROGMEM = "PUNKT";
-
-const char *const MORSE_WORDS[] PROGMEM = {
-    MW_0, MW_1, MW_2, MW_3, MW_4, MW_5, MW_6, MW_7, MW_8, MW_9};
-const int MORSE_WORD_COUNT = 10;
-
-// Symbol dimensions (canvas-fraction units)
-
 // ─── Day/night rhythm state ──────────────────────────────────────────────────
 struct CloudPreset
 {
@@ -280,9 +214,8 @@ uint32_t cloudSunnyUntil = 0;
 uint32_t lastDmxMs = 0;
 
 // Sub-modes cycled during the laser drawing phase
-const DrawMode DN_SUBMODES[] = {
-    MODE_OUTLINE, MODE_CORNERS, MODE_LETTERS, MODE_CIRCLE, MODE_MORSE};
-const int DN_SUBMODE_COUNT = 5;
+const DrawMode DN_SUBMODES[] = {MODE_CORNERS, MODE_LETTERS};
+const int DN_SUBMODE_COUNT = 2;
 
 enum DNPhase
 {
@@ -514,7 +447,7 @@ void finalizeCalibration()
   Serial.print(canvas_width_steps);
   Serial.print(F(" H="));
   Serial.print(canvas_height_steps);
-  Serial.println(F(" MODE: OUTLINE"));
+  Serial.println(F(" MODE: CORNERS"));
 }
 
 void saveCalibrationPoint()
@@ -588,11 +521,6 @@ void setDrawMode(DrawMode m)
   currentDrawMode = m;
   switch (m)
   {
-  case MODE_OUTLINE:
-    xStepper.setMaxSpeed(OUTLINE_SPEED);
-    yStepper.setMaxSpeed(OUTLINE_SPEED);
-    Serial.println(F("MODE: OUTLINE"));
-    break;
   case MODE_CORNERS:
     xStepper.setMaxSpeed(DRAW_MAX_SPEED);
     yStepper.setMaxSpeed(DRAW_MAX_SPEED);
@@ -603,18 +531,10 @@ void setDrawMode(DrawMode m)
     yStepper.setMaxSpeed(DRAW_MAX_SPEED);
     Serial.println(F("MODE: LETTERS"));
     break;
-  case MODE_CIRCLE:
-    xStepper.setMaxSpeed(DRAW_MAX_SPEED);
-    yStepper.setMaxSpeed(DRAW_MAX_SPEED);
-    Serial.println(F("MODE: CIRCLE"));
-    break;
   case MODE_MANUAL:
     Serial.println(F("MODE: MANUAL"));
     moveToCanvas(0.5f, 0.5f); // start at canvas centre
     setLaser(currentLaserPower);
-    break;
-  case MODE_MORSE:
-    Serial.println(F("MODE: MORSE"));
     break;
   case MODE_DAYNIGHT:
     dnPhase = DN_DRAWING;
@@ -725,56 +645,6 @@ void drawSegTo(float nx, float ny)
   xStepper.moveTo(normToStepsX(nx));
   yStepper.moveTo(normToStepsY(ny));
   waitForMotors();
-}
-
-// Trace the full canvas rectangle once. Checks for mode changes after each side.
-#define OUTLINE_CHECK()                                                      \
-  do                                                                         \
-  {                                                                          \
-    if (serialInterrupt) { setLaser(0); return; }                            \
-    if (currentDrawMode != MODE_OUTLINE && currentDrawMode != MODE_DAYNIGHT) \
-    {                                                                        \
-      setLaser(0);                                                           \
-      return;                                                                \
-    }                                                                        \
-    if (currentDrawMode == MODE_DAYNIGHT && dnShouldSwitch())                \
-    {                                                                        \
-      setLaser(0);                                                           \
-      return;                                                                \
-    }                                                                        \
-  } while (0)
-
-void traceCanvasOutline()
-{
-  // Clockwise corners: TL, TR, BR, BL
-  static const float CX[4] = {0.0f, 1.0f, 1.0f, 0.0f};
-  static const float CY[4] = {0.0f, 0.0f, 1.0f, 1.0f};
-
-  // Find nearest corner to avoid a long laser-off repositioning move
-  float px = (float)xStepper.currentPosition() / canvas_width_steps;
-  float py = (float)yStepper.currentPosition() / canvas_height_steps;
-  int start = 0;
-  float best = 1e9f;
-  for (int i = 0; i < 4; i++)
-  {
-    float dx = px - CX[i], dy = py - CY[i];
-    float d = dx * dx + dy * dy;
-    if (d < best) { best = d; start = i; }
-  }
-
-  moveToCanvas(CX[start], CY[start]);
-  OUTLINE_CHECK();
-
-  setLaser(currentLaserPower);
-  for (int i = 1; i <= 4; i++)
-  {
-    int next = (start + i) % 4;
-    xStepper.moveTo(normToStepsX(CX[next]));
-    yStepper.moveTo(normToStepsY(CY[next]));
-    waitForMotors();
-    OUTLINE_CHECK();
-  }
-  setLaser(0);
 }
 
 // Draw one random 90° corner shape anywhere on the canvas
@@ -920,41 +790,6 @@ void drawRandomLetter()
   drawGlyph(ox, oy, scale, (const int8_t *)pgm_read_word(&FONT_TABLE[idx]));
 }
 
-// Continuously draw a circle centred on the canvas.
-// 24 segments (15° each) for a smooth round result.
-#define CIRCLE_CHECK()                                                      \
-  do                                                                        \
-  {                                                                         \
-    if (serialInterrupt) { setLaser(0); return; }                           \
-    if (currentDrawMode != MODE_CIRCLE && currentDrawMode != MODE_DAYNIGHT) \
-    {                                                                       \
-      setLaser(0);                                                          \
-      return;                                                               \
-    }                                                                       \
-    if (currentDrawMode == MODE_DAYNIGHT && dnShouldSwitch())               \
-    {                                                                       \
-      setLaser(0);                                                          \
-      return;                                                               \
-    }                                                                       \
-  } while (0)
-
-void drawCircleMode()
-{
-  const float CX = 0.5f;
-  const float CY = 0.5f;
-
-  moveToCanvas(CX + CIRCLE_RADIUS, CY);
-  setLaser(currentLaserPower);
-  for (int i = 1; i <= CIRCLE_SEGMENTS; i++)
-  {
-    float a = (float)i * 2.0f * PI / CIRCLE_SEGMENTS;
-    drawSegTo(CX + CIRCLE_RADIUS * cos(a), CY + CIRCLE_RADIUS * sin(a));
-    if (i == CIRCLE_SEGMENTS / 2)
-      CIRCLE_CHECK();
-  }
-  setLaser(0);
-}
-
 /// Freehand draw: same velocity jog as calibration, but clamped to canvas bounds.
 void handleManualMode()
 {
@@ -1031,119 +866,6 @@ void handleManualMode()
   yStepper.runSpeed();
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-//  MORSE DRAWING
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Canvas width consumed by one letter's morse code (PROGMEM code string ptr)
-float morseLetterWidth(const char *code)
-{
-  float w = 0.0f;
-  bool first = true;
-  for (uint8_t i = 0;; i++)
-  {
-    char c = (char)pgm_read_byte(&code[i]);
-    if (c == '\0')
-      break;
-    if (!first)
-      w += MRS_EGAP;
-    w += (c == '-') ? MRS_DASH : MRS_DOT;
-    first = false;
-  }
-  return w;
-}
-
-// Total canvas width for a full word (PROGMEM word string, uppercase A-Z)
-float morseWordWidth(const char *word)
-{
-  float w = 0.0f;
-  bool firstLetter = true;
-  for (uint8_t i = 0;; i++)
-  {
-    char c = (char)pgm_read_byte(&word[i]);
-    if (c == '\0')
-      break;
-    if (c < 'A' || c > 'Z')
-      continue;
-    const char *code = (const char *)pgm_read_word(&MORSE_ABC[c - 'A']);
-    if (!firstLetter)
-      w += MRS_LGAP;
-    w += morseLetterWidth(code);
-    firstLetter = false;
-  }
-  return w;
-}
-
-#define MORSE_CHECK()                                                      \
-  do                                                                       \
-  {                                                                        \
-    if (serialInterrupt) { setLaser(0); return; }                          \
-    if (currentDrawMode != MODE_MORSE && currentDrawMode != MODE_DAYNIGHT) \
-    {                                                                      \
-      setLaser(0);                                                         \
-      return;                                                              \
-    }                                                                      \
-    if (currentDrawMode == MODE_DAYNIGHT && dnShouldSwitch())              \
-    {                                                                      \
-      setLaser(0);                                                         \
-      return;                                                              \
-    }                                                                      \
-  } while (0)
-
-void drawMorseWord(float ox, float oy, const char *word)
-{
-  float x = ox;
-  bool firstLetter = true;
-  for (uint8_t i = 0;; i++)
-  {
-    char c = (char)pgm_read_byte(&word[i]);
-    if (c == '\0')
-      break;
-    if (c < 'A' || c > 'Z')
-      continue;
-    const char *code = (const char *)pgm_read_word(&MORSE_ABC[c - 'A']);
-    if (!firstLetter)
-      x += MRS_LGAP;
-    firstLetter = false;
-    bool firstSym = true;
-    for (uint8_t j = 0;; j++)
-    {
-      char sym = (char)pgm_read_byte(&code[j]);
-      if (sym == '\0')
-        break;
-      if (!firstSym)
-        x += MRS_EGAP;
-      firstSym = false;
-      float symW = (sym == '-') ? MRS_DASH : MRS_DOT;
-      moveToCanvas(x, oy);
-      setLaser(currentLaserPower);
-      drawSegTo(x + symW, oy);
-      setLaser(0);
-      x += symW;
-    }
-    MORSE_CHECK();
-  }
-}
-
-void drawMorseMode()
-{
-  int wi = random(MORSE_WORD_COUNT);
-  const char *word = (const char *)pgm_read_word(&MORSE_WORDS[wi]);
-  Serial.print(F("MORSE: "));
-  for (uint8_t i = 0;; i++) {
-    char c = (char)pgm_read_byte(&word[i]);
-    if (c == '\0') break;
-    Serial.print(c);
-  }
-  Serial.println();
-  float totalW = morseWordWidth(word);
-  float maxOx = 1.0f - totalW;
-  if (maxOx < 0.0f)
-    maxOx = 0.0f;
-  float ox = random(0, max(1, (int)(maxOx * 1000))) / 1000.0f;
-  float oy = random(LETTER_Y_MARGIN, 1001 - LETTER_Y_MARGIN) / 1000.0f;
-  drawMorseWord(ox, oy, word);
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  DAY/NIGHT RHYTHM  (RS485 DMX + 5-min laser / 1-min sun cycle)
@@ -1299,20 +1021,11 @@ void handleDayNightMode()
       dmxSend(sunLevel);
     switch (dnSubMode)
     {
-    case MODE_OUTLINE:
-      traceCanvasOutline();
-      break;
     case MODE_CORNERS:
       drawRandomCorner();
       break;
     case MODE_LETTERS:
       drawRandomLetter();
-      break;
-    case MODE_CIRCLE:
-      drawCircleMode();
-      break;
-    case MODE_MORSE:
-      drawMorseMode();
       break;
     default:
       drawRandomCorner();
@@ -1564,23 +1277,14 @@ void loop()
     {
       switch (currentDrawMode)
       {
-      case MODE_OUTLINE:
-        traceCanvasOutline();
-        break;
       case MODE_CORNERS:
         drawRandomCorner();
         break;
       case MODE_LETTERS:
         drawRandomLetter();
         break;
-      case MODE_CIRCLE:
-        drawCircleMode();
-        break;
       case MODE_MANUAL:
         handleManualMode();
-        break;
-      case MODE_MORSE:
-        drawMorseMode();
         break;
       case MODE_DAYNIGHT:
         handleDayNightMode();
