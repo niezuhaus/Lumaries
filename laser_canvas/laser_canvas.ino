@@ -18,16 +18,50 @@
                       // RS485 data uses Serial1 TX (pin 18 on Mega)
 #define DMX_ADDRESS 1 // fixture base channel (1-based)
 
-// ─── Motor constants ──────────────────────────────────────────────────────────
-const float JOG_MAX_SPEED = 100.0;     // steps/sec during calibration jog
-const float DRAW_MAX_SPEED = 25.0;     // steps/sec during detailed drawing
-const float OUTLINE_SPEED  = 100.0;    // steps/sec for outline (straight lines only)
-const float ACCELERATION = 1000.0; // steps/s²
-const int POTI_MIN = 350;          // dead-zone lower bound
-const int POTI_MAX = 650;          // dead-zone upper bound
-
-const uint32_t DN_LASER_MS = 5UL * 60UL * 1000UL; // 5 min laser drawing
-const uint32_t DN_SUN_MS = 1UL * 60UL * 1000UL;   // 1 min sun DMX effect
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                        TUNABLE  PARAMETERS                               ║
+// ╠═══════════════════════════════════════════════════════════════════════════╣
+// ║  MOTORS                                                                   ║
+const float JOG_MAX_SPEED  = 100.0;  // steps/sec — calibration jogging
+const float DRAW_MAX_SPEED =  25.0;  // steps/sec — detailed drawing (letters, morse, corners)
+const float OUTLINE_SPEED  = 100.0;  // steps/sec — outline / circle (long straight runs)
+const float ACCELERATION   = 1000.0; // steps/s²  — applies to all modes
+const int   POTI_MIN       = 350;    // joystick dead-zone lower bound (0–1023)
+const int   POTI_MAX       = 650;    // joystick dead-zone upper bound (0–1023)
+// ╠═══════════════════════════════════════════════════════════════════════════╣
+// ║  RECORDING & PLAYBACK                                                     ║
+const uint8_t  MAX_RECORDINGS    = 15;  // max stored shapes  (RAM: N×POINTS×5 bytes)
+const uint8_t  MAX_REC_POINTS    = 50;  // max waypoints per shape
+const uint32_t REC_SAMPLE_MS     = 150; // ms between waypoint samples while recording
+const uint8_t  PLAYBACK_MAX_NOISE = 80; // max position jitter for oldest recording (0–1000 units)
+                                        // newest = 0 noise, oldest = PLAYBACK_MAX_NOISE
+// ╠═══════════════════════════════════════════════════════════════════════════╣
+// ║  CORNERS MODE                                                             ║
+const int CORNER_LEN_MIN = 30;  // min arm length (0–1000 canvas units)
+const int CORNER_LEN_MAX = 200; // max arm length
+// ╠═══════════════════════════════════════════════════════════════════════════╣
+// ║  LETTERS / MORSE MODE                                                     ║
+const int   LETTER_SCALE_MIN = 15;  // min glyph scale (÷1000 → canvas fraction)
+const int   LETTER_SCALE_MAX = 55;  // max glyph scale
+const int   LETTER_Y_MARGIN  = 50;  // top/bottom margin for random letter placement (0–1000)
+const float MRS_DOT  = 0.015f;      // dot segment length (canvas fraction)
+const float MRS_DASH = 0.045f;      // dash segment length
+const float MRS_EGAP = 0.008f;      // gap between symbols within one letter
+const float MRS_LGAP = 0.022f;      // gap between letters
+// ╠═══════════════════════════════════════════════════════════════════════════╣
+// ║  CIRCLE MODE                                                              ║
+const int   CIRCLE_SEGMENTS = 24;   // polygon approximation steps (higher = smoother)
+const float CIRCLE_RADIUS   = 0.38f;// radius as fraction of canvas (0.0–0.5)
+// ╠═══════════════════════════════════════════════════════════════════════════╣
+// ║  DAY/NIGHT MODE                                                           ║
+const uint32_t DN_LASER_MS = 5UL * 60UL * 1000UL; // ms of laser drawing per cycle (5 min)
+const uint32_t DN_SUN_MS   = 1UL * 60UL * 1000UL; // ms of DMX sun effect per cycle (1 min)
+// ║  DMX cloud timing (used inside DN sun phase)                              ║
+const uint16_t CLOUD_SUNNY_MIN_MS  = 3000;  // min sunny gap between clouds
+const uint16_t CLOUD_SUNNY_MAX_MS  = 15000; // max sunny gap between clouds
+const uint16_t CLOUD_SCATTER_GAP_MIN = 300; // ms between scattered cloud repetitions
+const uint16_t CLOUD_SCATTER_GAP_MAX = 900; // ms
+// ╚═══════════════════════════════════════════════════════════════════════════╝
 
 // ─── State machine ────────────────────────────────────────────────────────────
 enum SystemState
@@ -96,9 +130,6 @@ bool serialInterrupt = false;
 char pendingWord[17] = "";  // word queued for drawing in MODE_LETTERS
 
 // ─── Shape recordings ─────────────────────────────────────────────────────────
-const uint8_t  MAX_RECORDINGS  = 10;
-const uint8_t  MAX_REC_POINTS  = 50;
-const uint32_t REC_SAMPLE_MS   = 150;
 
 struct RecPoint { uint16_t x; uint16_t y; uint8_t laser; };
 RecPoint recordings[MAX_RECORDINGS][MAX_REC_POINTS];
@@ -107,7 +138,7 @@ uint8_t  recCount       = 0;
 bool     isRecording    = false;
 uint8_t  recActiveIdx   = 0;
 uint32_t lastSampleMs   = 0;
-uint8_t  playbackRecIdx = 0;
+uint8_t  lastPlayedIdx  = 255;  // 255 = none yet
 
 // ─── Stepper instances ───────────────────────────────────────────────────────
 AccelStepper xStepper(AccelStepper::DRIVER, Y_STEP, Y_DIR);
@@ -212,10 +243,6 @@ const char *const MORSE_WORDS[] PROGMEM = {
 const int MORSE_WORD_COUNT = 10;
 
 // Symbol dimensions (canvas-fraction units)
-const float MRS_DOT = 0.015f;  // dot line length
-const float MRS_DASH = 0.045f; // dash line length
-const float MRS_EGAP = 0.008f; // gap between symbols within a letter
-const float MRS_LGAP = 0.022f; // gap between letters
 
 // ─── Day/night rhythm state ──────────────────────────────────────────────────
 struct CloudPreset
@@ -597,7 +624,7 @@ void setDrawMode(DrawMode m)
     Serial.println(F("MODE: DAYNIGHT (5min laser / 1min sun)"));
     break;
   case MODE_PLAYBACK:
-    playbackRecIdx = (recCount > 0) ? recCount - 1 : 0;
+    lastPlayedIdx = 255;
     xStepper.setMaxSpeed(DRAW_MAX_SPEED);
     yStepper.setMaxSpeed(DRAW_MAX_SPEED);
     Serial.print(F("MODE: PLAYBACK ("));
@@ -753,9 +780,8 @@ void traceCanvasOutline()
 // Draw one random 90° corner shape anywhere on the canvas
 void drawRandomCorner()
 {
-  // Arm lengths: 30–200 canvas units (3–20 % of canvas)
-  int lenH = random(30, 201);
-  int lenV = random(30, 201);
+  int lenH = random(CORNER_LEN_MIN, CORNER_LEN_MAX + 1);
+  int lenV = random(CORNER_LEN_MIN, CORNER_LEN_MAX + 1);
 
   // Vertex position — kept away from edges so arms have room
   int vx = random(lenH, 1001 - lenH);
@@ -873,8 +899,7 @@ void drawSerialWord(const char *word)
 // Draw one random German character at a random position with a random size.
 void drawRandomLetter()
 {
-  // Scale: font cell unit → canvas fraction. 0.015–0.055 → char 7–28% of canvas wide.
-  float scale = random(15, 56) / 1000.0f;
+  float scale = random(LETTER_SCALE_MIN, LETTER_SCALE_MAX + 1) / 1000.0f;
   float charW = FONT_CELL_W * scale;
   float charH = FONT_CELL_H * scale;
 
@@ -915,19 +940,17 @@ void drawRandomLetter()
 
 void drawCircleMode()
 {
-  const int SEG = 24;
   const float CX = 0.5f;
   const float CY = 0.5f;
-  const float R = 0.38f; // radius as fraction of canvas
 
-  moveToCanvas(CX + R, CY); // start at 3 o'clock, laser off
+  moveToCanvas(CX + CIRCLE_RADIUS, CY);
   setLaser(currentLaserPower);
-  for (int i = 1; i <= SEG; i++)
+  for (int i = 1; i <= CIRCLE_SEGMENTS; i++)
   {
-    float a = (float)i * 2.0f * PI / SEG;
-    drawSegTo(CX + R * cos(a), CY + R * sin(a));
-    if (i == SEG / 2)
-      CIRCLE_CHECK(); // interruptible at halfway point
+    float a = (float)i * 2.0f * PI / CIRCLE_SEGMENTS;
+    drawSegTo(CX + CIRCLE_RADIUS * cos(a), CY + CIRCLE_RADIUS * sin(a));
+    if (i == CIRCLE_SEGMENTS / 2)
+      CIRCLE_CHECK();
   }
   setLaser(0);
 }
@@ -1118,7 +1141,7 @@ void drawMorseMode()
   if (maxOx < 0.0f)
     maxOx = 0.0f;
   float ox = random(0, max(1, (int)(maxOx * 1000))) / 1000.0f;
-  float oy = random(50, 951) / 1000.0f;
+  float oy = random(LETTER_Y_MARGIN, 1001 - LETTER_Y_MARGIN) / 1000.0f;
   drawMorseWord(ox, oy, word);
 }
 
@@ -1154,7 +1177,7 @@ uint8_t lerpU8(uint8_t from, uint8_t to, uint32_t elapsed, uint16_t duration)
 void cloudEnterSunny()
 {
   cloudPhase = CP_SUNNY;
-  cloudSunnyUntil = millis() + random(3000, 15001);
+  cloudSunnyUntil = millis() + random(CLOUD_SUNNY_MIN_MS, CLOUD_SUNNY_MAX_MS + 1);
 }
 
 void cloudStartDip()
@@ -1224,7 +1247,7 @@ void updateDMXCloud(uint8_t sunLevel)
       if (cloudScatter > 0)
       {
         cloudScatter--;
-        cloudSunnyUntil = now + random(300, 900);
+        cloudSunnyUntil = now + random(CLOUD_SCATTER_GAP_MIN, CLOUD_SCATTER_GAP_MAX + 1);
         cloudPhase = CP_SUNNY;
       }
       else
@@ -1302,37 +1325,73 @@ void handleDayNightMode()
 //  PLAYBACK MODE
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// Apply random noise (±noiseScale in 0-1000 units) to a recorded coordinate
+static float deformCoord(uint16_t v, int16_t noiseScale)
+{
+  int16_t n = (noiseScale > 0) ? (int16_t)random(-noiseScale, noiseScale + 1) : 0;
+  int16_t out = (int16_t)v + n;
+  if (out < 0)    out = 0;
+  if (out > 1000) out = 1000;
+  return out / 1000.0f;
+}
+
+// Weighted random pick: weight[i] = i+1 (newest = highest), skip lastPlayedIdx if >1 rec
+static uint8_t pickPlaybackIdx()
+{
+  // Build total weight, excluding lastPlayedIdx when possible
+  uint16_t total = 0;
+  for (uint8_t i = 0; i < recCount; i++)
+    if (recCount == 1 || i != lastPlayedIdx)
+      total += (uint16_t)(i + 1);
+
+  uint16_t roll = (uint16_t)random(total);
+  uint16_t acc  = 0;
+  for (uint8_t i = 0; i < recCount; i++) {
+    if (recCount > 1 && i == lastPlayedIdx) continue;
+    acc += (uint16_t)(i + 1);
+    if (roll < acc) return i;
+  }
+  return recCount - 1;
+}
+
 void handlePlaybackMode()
 {
   if (recCount == 0)
     return;
 
-  RecPoint *rec = recordings[playbackRecIdx];
-  uint8_t   len = recLengths[playbackRecIdx];
+  uint8_t idx = pickPlaybackIdx();
+  lastPlayedIdx = idx;
+
+  RecPoint *rec = recordings[idx];
+  uint8_t   len = recLengths[idx];
+
+  // Age 0.0 = newest (recCount-1), 1.0 = oldest (0)
+  float age = (recCount > 1) ? (float)(recCount - 1 - idx) / (float)(recCount - 1) : 0.0f;
+  // Max noise in 0-1000 units: ±80 at full age
+  int16_t noiseScale = (int16_t)(age * PLAYBACK_MAX_NOISE);
+
+  Serial.print(F("PLAY rec "));
+  Serial.print(idx);
+  Serial.print(F(" age="));
+  Serial.print((int)(age * 100));
+  Serial.println(F("%"));
 
   if (len > 0)
   {
-    // Move to first recorded point, laser off
-    moveToCanvas(rec[0].x / 1000.0f, rec[0].y / 1000.0f);
+    moveToCanvas(deformCoord(rec[0].x, noiseScale), deformCoord(rec[0].y, noiseScale));
     if (serialInterrupt || currentDrawMode != MODE_PLAYBACK) { setLaser(0); return; }
 
     for (uint8_t i = 1; i < len; i++)
     {
-      float x = rec[i].x / 1000.0f;
-      float y = rec[i].y / 1000.0f;
-      if (rec[i].laser)
-        setLaser(currentLaserPower);
-      else
-        setLaser(0);
-      xStepper.moveTo(normToStepsX(x));
-      yStepper.moveTo(normToStepsY(y));
+      if (rec[i].laser) setLaser(currentLaserPower); else setLaser(0);
+      xStepper.moveTo(normToStepsX(deformCoord(rec[i].x, noiseScale)));
+      yStepper.moveTo(normToStepsY(deformCoord(rec[i].y, noiseScale)));
       waitForMotors();
       if (serialInterrupt || currentDrawMode != MODE_PLAYBACK) { setLaser(0); return; }
     }
   }
 
   setLaser(0);
-  playbackRecIdx = (playbackRecIdx == 0) ? recCount - 1 : playbackRecIdx - 1;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
