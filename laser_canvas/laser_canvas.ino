@@ -14,7 +14,6 @@
 #define BTN_NEXT 51     // next draw mode button
 #define POTI1 A11       // X-axis jog
 #define POTI2 A12     // Y-axis jog
-#define DREH_POTI A5  // laser power (used in READY mode)
 #define LASER_PIN 45  // PWM
 #define DMX_PIN 2     // RS485 direction-enable (tied DE+/RE-)
                       // RS485 data uses Serial1 TX (pin 18 on Mega)
@@ -65,8 +64,7 @@ long canvas_width_steps = 0;
 long canvas_height_steps = 0;
 
 // ─── Laser ───────────────────────────────────────────────────────────────────
-const int CAL_LASER_POWER = 255; // ignored — poti controls actual brightness
-int currentLaserPower = 0;
+int currentLaserPower = 255;
 bool laserEnabled = false;
 
 // ─── Button debounce ─────────────────────────────────────────────────────────
@@ -270,13 +268,6 @@ DrawMode dnSubMode = MODE_CORNERS;
 //  LASER
 // ═══════════════════════════════════════════════════════════════════════════════
 
-void updateLaserPoti()
-{
-  currentLaserPower = map(analogRead(DREH_POTI), 0, 1023, 0, 255);
-  if (laserEnabled)
-    analogWrite(LASER_PIN, currentLaserPower);
-}
-
 void setLaser(int power)
 {
   laserEnabled = (power > 0);
@@ -290,7 +281,7 @@ void laserConfirmBlink()
   {
     setLaser(0);
     delay(80);
-    setLaser(CAL_LASER_POWER);
+    setLaser(currentLaserPower);
     delay(80);
   }
 }
@@ -432,7 +423,7 @@ void restartCalibration()
 {
   xStepper.stop();
   yStepper.stop();
-  setLaser(CAL_LASER_POWER);
+  setLaser(currentLaserPower);
   currentState = CALIBRATE_LEFT;
   setBlinkTarget(1);
   Serial.println(F("CAL: move to LEFT limit, press button"));
@@ -766,7 +757,6 @@ void waitForMotors()
   {
     xStepper.run();
     yStepper.run();
-    updateLaserPoti();
     // During day/night laser phase: keep DMX fixture at full sun ~33 Hz
     if (currentDrawMode == MODE_DAYNIGHT && dnPhase == DN_DRAWING)
     {
@@ -774,7 +764,7 @@ void waitForMotors()
       if (now - lastDmxMs >= 30)
       {
         lastDmxMs = now;
-        dmxSend((uint8_t)map(analogRead(DREH_POTI), 0, 1023, 60, 255));
+        dmxSend(255);
         if (dnShouldSwitch())
         {
           xStepper.stop();
@@ -1259,7 +1249,7 @@ void updateDMXCloud(uint8_t sunLevel)
 void handleDayNightMode()
 {
   uint32_t now = millis();
-  uint8_t sunLevel = (uint8_t)map(analogRead(DREH_POTI), 0, 1023, 60, 255);
+  uint8_t sunLevel = 255;
 
   // Phase transitions
   if (dnPhase == DN_DRAWING && now - dnPhaseStart >= DN_LASER_MS)
@@ -1430,7 +1420,6 @@ void setup()
   pinMode(LASER_PIN, OUTPUT);
   pinMode(POTI1, INPUT);
   pinMode(POTI2, INPUT);
-  pinMode(DREH_POTI, INPUT);
   pinMode(BTN_JOYSTICK, INPUT_PULLUP);
   pinMode(BTN_PREV, INPUT_PULLUP);
   pinMode(BTN_NEXT, INPUT_PULLUP);
@@ -1443,7 +1432,7 @@ void setup()
   pinMode(DMX_PIN, OUTPUT);
   digitalWrite(DMX_PIN, HIGH); // RS485 always in transmit mode
 
-  setLaser(CAL_LASER_POWER);
+  setLaser(currentLaserPower);
 
   keypad.setHoldTime(150); // fire HOLD events every 150ms for smooth jog
 
@@ -1460,7 +1449,6 @@ void setup()
 
 void loop()
 {
-  updateLaserPoti();
   if (currentState != READY)
   {
     handleCalibrationState();
