@@ -19,8 +19,9 @@
 #define DMX_ADDRESS 1 // fixture base channel (1-based)
 
 // ─── Motor constants ──────────────────────────────────────────────────────────
-const float JOG_MAX_SPEED = 100.0; // steps/sec during calibration jog
-const float DRAW_MAX_SPEED = 25.0; // steps/sec during drawing moves (1/4 of jog)
+const float JOG_MAX_SPEED = 100.0;     // steps/sec during calibration jog
+const float DRAW_MAX_SPEED = 25.0;     // steps/sec during detailed drawing
+const float OUTLINE_SPEED  = 100.0;    // steps/sec for outline (straight lines only)
 const float ACCELERATION = 1000.0; // steps/s²
 const int POTI_MIN = 350;          // dead-zone lower bound
 const int POTI_MAX = 650;          // dead-zone upper bound
@@ -42,16 +43,16 @@ SystemState currentState = CALIBRATE_LEFT;
 // ─── Draw modes (active when READY) ──────────────────────────────────────────
 enum DrawMode
 {
-  MODE_OUTLINE, // 1 — continuously traces canvas border
-  MODE_CORNERS, // 2 — random small 90° corner shapes
-  MODE_LETTERS, // 3 — random German characters at random positions
-  MODE_CIRCLE,  // 4 — continuous circle in canvas centre
-  MODE_MANUAL,  // 5 — poti jog with laser on — freehand drawing
-  MODE_SERIAL,  // 6 — accepts M/L/P/H/S commands over serial
-  MODE_MORSE,   // 7 — draws morse-coded words at random positions
-  MODE_DAYNIGHT // 8 — 5-min laser drawing / 1-min sun DMX cycle
+  MODE_CORNERS,  // 1 — random small 90° corner shapes
+  MODE_MANUAL,   // 2 — poti jog with laser on — freehand drawing
+  MODE_PLAYBACK, // 3 — replay stored recordings in sequence
+  MODE_OUTLINE,  // 4 — continuously traces canvas border
+  MODE_LETTERS,  // 5 — random German characters at random positions
+  MODE_CIRCLE,   // 6 — continuous circle in canvas centre
+  MODE_MORSE,    // 7 — draws morse-coded words at random positions
+  MODE_DAYNIGHT  // 8 — 5-min laser drawing / 1-min sun DMX cycle
 };
-DrawMode currentDrawMode = MODE_OUTLINE;
+DrawMode currentDrawMode = MODE_CORNERS;
 const int DRAW_MODE_COUNT = 8;
 
 // ─── Canvas geometry (filled after calibration) ───────────────────────────────
@@ -87,6 +88,27 @@ const int SERIAL_BUF_SIZE = 32;
 char serialBuf[SERIAL_BUF_SIZE];
 int serialBufPos = 0;
 
+// ─── Serial pending command ───────────────────────────────────────────────────
+enum SerialPending { SP_NONE, SP_MOVE, SP_DRAW, SP_HOME };
+SerialPending pendingSerial = SP_NONE;
+float pendingSerialX = 0.0f, pendingSerialY = 0.0f;
+bool serialInterrupt = false;
+char pendingWord[17] = "";  // word queued for drawing in MODE_LETTERS
+
+// ─── Shape recordings ─────────────────────────────────────────────────────────
+const uint8_t  MAX_RECORDINGS  = 10;
+const uint8_t  MAX_REC_POINTS  = 50;
+const uint32_t REC_SAMPLE_MS   = 150;
+
+struct RecPoint { uint16_t x; uint16_t y; uint8_t laser; };
+RecPoint recordings[MAX_RECORDINGS][MAX_REC_POINTS];
+uint8_t  recLengths[MAX_RECORDINGS];
+uint8_t  recCount       = 0;
+bool     isRecording    = false;
+uint8_t  recActiveIdx   = 0;
+uint32_t lastSampleMs   = 0;
+uint8_t  playbackRecIdx = 0;
+
 // ─── Stepper instances ───────────────────────────────────────────────────────
 AccelStepper xStepper(AccelStepper::DRIVER, Y_STEP, Y_DIR);
 AccelStepper yStepper(AccelStepper::DRIVER, X_STEP, X_DIR);
@@ -96,7 +118,7 @@ AccelStepper yStepper(AccelStepper::DRIVER, X_STEP, X_DIR);
 //  Curves are approximated with ~6 waypoints per semicircle (30° steps).
 //  Pairs of int8_t (x,y) | -1,-1 = pen-up | 127,127 = end of glyph
 // ═══════════════════════════════════════════════════════════════════════════════
-const int8_t F_A[] PROGMEM = {0, 12, 4, 0, 8, 12, -1, -1, 2, 6, 6, 6, 127, 127};
+const int8_t F_A[] PROGMEM = {0, 0, 4, 12, 8, 0, -1, -1, 2, 6, 6, 6, 127, 127};
 const int8_t F_B[] PROGMEM = {0, 12, 0, 0, 4, 0, 7, 2, 7, 4, 4, 6, 0, 6, 4, 6, 7, 8, 7, 10, 4, 12, 0, 12, 127, 127};
 const int8_t F_C[] PROGMEM = {7, 2, 6, 1, 4, 0, 2, 1, 1, 3, 0, 6, 1, 9, 2, 11, 4, 12, 6, 11, 7, 10, 127, 127};
 const int8_t F_D[] PROGMEM = {0, 12, 0, 0, 4, 0, 7, 3, 8, 6, 7, 9, 4, 12, 0, 12, 127, 127};
@@ -117,7 +139,7 @@ const int8_t F_R[] PROGMEM = {0, 12, 0, 0, 4, 0, 7, 2, 7, 4, 4, 6, 0, 6, -1, -1,
 const int8_t F_S[] PROGMEM = {7, 2, 6, 1, 4, 0, 2, 1, 1, 3, 1, 5, 4, 6, 7, 7, 7, 9, 6, 11, 4, 12, 2, 11, 1, 10, 127, 127};
 const int8_t F_T[] PROGMEM = {0, 0, 8, 0, -1, -1, 4, 0, 4, 12, 127, 127};
 const int8_t F_U[] PROGMEM = {0, 0, 0, 9, 1, 11, 4, 12, 7, 11, 8, 9, 8, 0, 127, 127};
-const int8_t F_V[] PROGMEM = {0, 0, 4, 12, 8, 0, 127, 127};
+const int8_t F_V[] PROGMEM = {0, 12, 4, 0, 8, 12, 127, 127};
 const int8_t F_W[] PROGMEM = {0, 0, 2, 12, 4, 7, 6, 12, 8, 0, 127, 127};
 const int8_t F_X[] PROGMEM = {0, 0, 8, 12, -1, -1, 8, 0, 0, 12, 127, 127};
 const int8_t F_Y[] PROGMEM = {0, 0, 4, 6, 8, 0, -1, -1, 4, 6, 4, 12, 127, 127};
@@ -371,6 +393,12 @@ void checkModeButtons()
 //  JOG CONTROL  (calibration phase, velocity mode)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+bool joystickMoved()
+{
+  int x = analogRead(POTI1), y = analogRead(POTI2);
+  return (x < POTI_MIN || x > POTI_MAX || y < POTI_MIN || y > POTI_MAX);
+}
+
 float potiToSpeed(int raw)
 {
   if (raw > POTI_MAX)
@@ -454,7 +482,7 @@ void finalizeCalibration()
   Y_top = 0;
 
   currentState = READY;
-  currentDrawMode = MODE_OUTLINE;
+  currentDrawMode = MODE_CORNERS;
   Serial.print(F("READY W="));
   Serial.print(canvas_width_steps);
   Serial.print(F(" H="));
@@ -529,28 +557,34 @@ void setDrawMode(DrawMode m)
   xStepper.stop();
   yStepper.stop();
   setLaser(0);
+  if (isRecording) { isRecording = false; recCount++; }
   currentDrawMode = m;
   switch (m)
   {
   case MODE_OUTLINE:
+    xStepper.setMaxSpeed(OUTLINE_SPEED);
+    yStepper.setMaxSpeed(OUTLINE_SPEED);
     Serial.println(F("MODE: OUTLINE"));
     break;
   case MODE_CORNERS:
+    xStepper.setMaxSpeed(DRAW_MAX_SPEED);
+    yStepper.setMaxSpeed(DRAW_MAX_SPEED);
     Serial.println(F("MODE: CORNERS"));
     break;
   case MODE_LETTERS:
+    xStepper.setMaxSpeed(DRAW_MAX_SPEED);
+    yStepper.setMaxSpeed(DRAW_MAX_SPEED);
     Serial.println(F("MODE: LETTERS"));
     break;
   case MODE_CIRCLE:
+    xStepper.setMaxSpeed(DRAW_MAX_SPEED);
+    yStepper.setMaxSpeed(DRAW_MAX_SPEED);
     Serial.println(F("MODE: CIRCLE"));
     break;
   case MODE_MANUAL:
     Serial.println(F("MODE: MANUAL"));
     moveToCanvas(0.5f, 0.5f); // start at canvas centre
     setLaser(currentLaserPower);
-    break;
-  case MODE_SERIAL:
-    Serial.println(F("MODE: SERIAL"));
     break;
   case MODE_MORSE:
     Serial.println(F("MODE: MORSE"));
@@ -561,6 +595,14 @@ void setDrawMode(DrawMode m)
     dnSubMode = DN_SUBMODES[random(DN_SUBMODE_COUNT)];
     cloudEnterSunny();
     Serial.println(F("MODE: DAYNIGHT (5min laser / 1min sun)"));
+    break;
+  case MODE_PLAYBACK:
+    playbackRecIdx = (recCount > 0) ? recCount - 1 : 0;
+    xStepper.setMaxSpeed(DRAW_MAX_SPEED);
+    yStepper.setMaxSpeed(DRAW_MAX_SPEED);
+    Serial.print(F("MODE: PLAYBACK ("));
+    Serial.print(recCount);
+    Serial.println(F(" recordings)"));
     break;
   }
 }
@@ -596,6 +638,18 @@ void waitForMotors()
   {
     xStepper.run();
     yStepper.run();
+    handleSerialInput();
+    if (currentDrawMode != MODE_MANUAL && joystickMoved())
+    {
+      setDrawMode(MODE_MANUAL);
+      serialInterrupt = true;
+    }
+    if (serialInterrupt)
+    {
+      xStepper.stop();
+      yStepper.stop();
+      break;
+    }
     // During day/night laser phase: keep DMX fixture at full sun ~33 Hz
     if (currentDrawMode == MODE_DAYNIGHT && dnPhase == DN_DRAWING)
     {
@@ -650,6 +704,7 @@ void drawSegTo(float nx, float ny)
 #define OUTLINE_CHECK()                                                      \
   do                                                                         \
   {                                                                          \
+    if (serialInterrupt) { setLaser(0); return; }                            \
     if (currentDrawMode != MODE_OUTLINE && currentDrawMode != MODE_DAYNIGHT) \
     {                                                                        \
       setLaser(0);                                                           \
@@ -664,23 +719,34 @@ void drawSegTo(float nx, float ny)
 
 void traceCanvasOutline()
 {
-  moveToCanvas(0.0f, 0.0f);
+  // Clockwise corners: TL, TR, BR, BL
+  static const float CX[4] = {0.0f, 1.0f, 1.0f, 0.0f};
+  static const float CY[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+
+  // Find nearest corner to avoid a long laser-off repositioning move
+  float px = (float)xStepper.currentPosition() / canvas_width_steps;
+  float py = (float)yStepper.currentPosition() / canvas_height_steps;
+  int start = 0;
+  float best = 1e9f;
+  for (int i = 0; i < 4; i++)
+  {
+    float dx = px - CX[i], dy = py - CY[i];
+    float d = dx * dx + dy * dy;
+    if (d < best) { best = d; start = i; }
+  }
+
+  moveToCanvas(CX[start], CY[start]);
+  OUTLINE_CHECK();
+
   setLaser(currentLaserPower);
-  xStepper.moveTo(normToStepsX(1.0f));
-  yStepper.moveTo(normToStepsY(0.0f));
-  waitForMotors();
-  OUTLINE_CHECK(); // → top-right
-  xStepper.moveTo(normToStepsX(1.0f));
-  yStepper.moveTo(normToStepsY(1.0f));
-  waitForMotors();
-  OUTLINE_CHECK(); // → bottom-right
-  xStepper.moveTo(normToStepsX(0.0f));
-  yStepper.moveTo(normToStepsY(1.0f));
-  waitForMotors();
-  OUTLINE_CHECK(); // → bottom-left
-  xStepper.moveTo(normToStepsX(0.0f));
-  yStepper.moveTo(normToStepsY(0.0f));
-  waitForMotors(); // → top-left (close)
+  for (int i = 1; i <= 4; i++)
+  {
+    int next = (start + i) % 4;
+    xStepper.moveTo(normToStepsX(CX[next]));
+    yStepper.moveTo(normToStepsY(CY[next]));
+    waitForMotors();
+    OUTLINE_CHECK();
+  }
   setLaser(0);
 }
 
@@ -780,6 +846,30 @@ void drawGlyph(float ox, float oy, float scale, const int8_t *glyph)
   setLaser(0);
 }
 
+void drawSerialWord(const char *word)
+{
+  int len = strlen(word);
+  if (len == 0) return;
+  // Scale so the whole word fits within 90% of canvas width, capped at single-letter max
+  float step  = FONT_CELL_W + 1.0f;  // 1 unit gap between chars
+  float scale = min(0.9f / (len * step), 0.05f);
+  float charH = FONT_CELL_H * scale;
+  float totalW = len * step * scale - 1.0f * scale; // subtract trailing gap
+  float maxOy = max(0.0f, 1.0f - charH);
+  float ox = (1.0f - totalW) / 2.0f; // horizontally centred
+  float oy = random(0, max(1, (int)(maxOy * 1000))) / 1000.0f;
+
+  Serial.print(F("WORD: "));
+  Serial.println(word);
+
+  for (int i = 0; i < len; i++)
+  {
+    const int8_t *g = getGlyph(word[i]);
+    if (g) drawGlyph(ox + i * step * scale, oy, scale, g);
+  }
+  setLaser(0);
+}
+
 // Draw one random German character at a random position with a random size.
 void drawRandomLetter()
 {
@@ -810,6 +900,7 @@ void drawRandomLetter()
 #define CIRCLE_CHECK()                                                      \
   do                                                                        \
   {                                                                         \
+    if (serialInterrupt) { setLaser(0); return; }                           \
     if (currentDrawMode != MODE_CIRCLE && currentDrawMode != MODE_DAYNIGHT) \
     {                                                                       \
       setLaser(0);                                                          \
@@ -844,21 +935,73 @@ void drawCircleMode()
 /// Freehand draw: same velocity jog as calibration, but clamped to canvas bounds.
 void handleManualMode()
 {
+  // Button: toggle recording
+  if (checkButton())
+  {
+    if (!isRecording)
+    {
+      if (recCount < MAX_RECORDINGS)
+      {
+        recActiveIdx = recCount;
+        recLengths[recActiveIdx] = 0;
+        isRecording = true;
+        lastSampleMs = millis();
+        laserConfirmBlink();
+        Serial.print(F("REC start: slot "));
+        Serial.println(recCount + 1);
+      }
+      else
+      {
+        Serial.println(F("REC full (10/10) — use C to recalibrate and clear"));
+      }
+    }
+    else
+    {
+      isRecording = false;
+      recCount++;
+      laserConfirmBlink();
+      Serial.print(F("REC saved: "));
+      Serial.print(recLengths[recActiveIdx]);
+      Serial.println(F(" pts"));
+    }
+  }
+
+  // Sample position + laser state while recording
+  if (isRecording)
+  {
+    uint32_t now = millis();
+    if (now - lastSampleMs >= REC_SAMPLE_MS)
+    {
+      lastSampleMs = now;
+      uint8_t idx = recLengths[recActiveIdx];
+      if (idx < MAX_REC_POINTS)
+      {
+        recordings[recActiveIdx][idx].x = (uint16_t)constrain(
+          map(xStepper.currentPosition(), 0, canvas_width_steps, 0, 1000), 0, 1000);
+        recordings[recActiveIdx][idx].y = (uint16_t)constrain(
+          map(yStepper.currentPosition(), 0, canvas_height_steps, 0, 1000), 0, 1000);
+        recordings[recActiveIdx][idx].laser = laserEnabled ? 1 : 0;
+        recLengths[recActiveIdx]++;
+      }
+      else
+      {
+        isRecording = false;
+        recCount++;
+        laserConfirmBlink();
+        Serial.println(F("REC auto-stopped (buffer full)"));
+      }
+    }
+  }
+
+  // Jog with canvas edge clamping
   float sx = potiToSpeed(analogRead(POTI1));
   float sy = potiToSpeed(analogRead(POTI2));
-
-  // Stop each axis at the canvas edge instead of running past it
   long xPos = xStepper.currentPosition();
   long yPos = yStepper.currentPosition();
-  if (sx < 0 && xPos <= 0)
-    sx = 0;
-  if (sx > 0 && xPos >= canvas_width_steps)
-    sx = 0;
-  if (sy < 0 && yPos <= 0)
-    sy = 0;
-  if (sy > 0 && yPos >= canvas_height_steps)
-    sy = 0;
-
+  if (sx < 0 && xPos <= 0) sx = 0;
+  if (sx > 0 && xPos >= canvas_width_steps) sx = 0;
+  if (sy < 0 && yPos <= 0) sy = 0;
+  if (sy > 0 && yPos >= canvas_height_steps) sy = 0;
   xStepper.setSpeed(sx);
   yStepper.setSpeed(sy);
   xStepper.runSpeed();
@@ -911,6 +1054,7 @@ float morseWordWidth(const char *word)
 #define MORSE_CHECK()                                                      \
   do                                                                       \
   {                                                                        \
+    if (serialInterrupt) { setLaser(0); return; }                          \
     if (currentDrawMode != MODE_MORSE && currentDrawMode != MODE_DAYNIGHT) \
     {                                                                      \
       setLaser(0);                                                         \
@@ -1155,15 +1299,44 @@ void handleDayNightMode()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  SERIAL COMMAND INTERFACE  (READY mode only)
-//
-//  Commands (newline-terminated):
-//    M x y   — move (laser off) to canvas coords 0-1000
-//    L x y   — draw (laser on) to canvas coords 0-1000
-//    P p     — set laser power 0-255 (persists for L commands)
-//    H       — home to (0, 0)
-//    S       — report position and canvas size
-//    C       — restart calibration
+//  PLAYBACK MODE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+void handlePlaybackMode()
+{
+  if (recCount == 0)
+    return;
+
+  RecPoint *rec = recordings[playbackRecIdx];
+  uint8_t   len = recLengths[playbackRecIdx];
+
+  if (len > 0)
+  {
+    // Move to first recorded point, laser off
+    moveToCanvas(rec[0].x / 1000.0f, rec[0].y / 1000.0f);
+    if (serialInterrupt || currentDrawMode != MODE_PLAYBACK) { setLaser(0); return; }
+
+    for (uint8_t i = 1; i < len; i++)
+    {
+      float x = rec[i].x / 1000.0f;
+      float y = rec[i].y / 1000.0f;
+      if (rec[i].laser)
+        setLaser(currentLaserPower);
+      else
+        setLaser(0);
+      xStepper.moveTo(normToStepsX(x));
+      yStepper.moveTo(normToStepsY(y));
+      waitForMotors();
+      if (serialInterrupt || currentDrawMode != MODE_PLAYBACK) { setLaser(0); return; }
+    }
+  }
+
+  setLaser(0);
+  playbackRecIdx = (playbackRecIdx == 0) ? recCount - 1 : playbackRecIdx - 1;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  SERIAL COMMAND INTERFACE  (always active in READY state)
 //
 //  All successful commands reply "OK\n".
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1186,39 +1359,59 @@ void parseSerialCommand(char *cmd)
 
   if (cmd[0] == 'M' && sscanf(cmd + 1, "%d %d", &x, &y) == 2)
   {
-    moveToCanvas(x / 1000.0f, y / 1000.0f);
-    Serial.println(F("OK"));
+    pendingSerialX = x / 1000.0f;
+    pendingSerialY = y / 1000.0f;
+    pendingSerial = SP_MOVE;
+    serialInterrupt = true;
   }
-  else if (cmd[0] == 'L' && sscanf(cmd + 1, "%d %d", &x, &y) == 2)
+  else if (cmd[0] == 'D' && sscanf(cmd + 1, "%d %d", &x, &y) == 2)
   {
-    drawToCanvas(x / 1000.0f, y / 1000.0f, currentLaserPower);
-    Serial.println(F("OK"));
-  }
-  else if (cmd[0] == 'P' && sscanf(cmd + 1, "%d", &p) == 1)
-  {
-    setLaser(p);
-    currentLaserPower = currentLaserPower; // already set by setLaser
-    Serial.println(F("OK"));
+    pendingSerialX = x / 1000.0f;
+    pendingSerialY = y / 1000.0f;
+    pendingSerial = SP_DRAW;
+    serialInterrupt = true;
   }
   else if (cmd[0] == 'H')
   {
-    moveToCanvas(0.0f, 0.0f);
-    Serial.println(F("OK"));
+    pendingSerial = SP_HOME;
+    serialInterrupt = true;
+  }
+  else if (cmd[0] == 'L' && sscanf(cmd + 1, "%d", &p) == 1)
+  {
+    currentLaserPower = constrain(p, 0, 255);
+    analogWrite(LASER_PIN, laserEnabled ? currentLaserPower : 0);
+    Serial.print(F("LASER "));
+    Serial.println(currentLaserPower);
   }
   else if (cmd[0] == 'S')
   {
     reportStatus();
     Serial.println(F("OK"));
   }
-  else if (cmd[0] == 'C')
-  {
-    restartCalibration();
-    Serial.println(F("OK"));
-  }
   else if (cmd[0] == 'N')
   {
     setDrawMode((DrawMode)((currentDrawMode + 1) % DRAW_MODE_COUNT));
+    serialInterrupt = true;
     Serial.println(F("OK"));
+  }
+  else if (cmd[0] == 'P')
+  {
+    setDrawMode((DrawMode)((currentDrawMode - 1 + DRAW_MODE_COUNT) % DRAW_MODE_COUNT));
+    serialInterrupt = true;
+    Serial.println(F("OK"));
+  }
+  else if (cmd[0] == 'C')
+  {
+    restartCalibration();
+    serialInterrupt = true;
+    Serial.println(F("OK"));
+  }
+  else if (strlen(cmd) > 1 && currentDrawMode == MODE_LETTERS)
+  {
+    // Multi-char input in letters mode → queue as word to draw
+    strncpy(pendingWord, cmd, 16);
+    pendingWord[16] = '\0';
+    serialInterrupt = true;
   }
   else
   {
@@ -1302,32 +1495,67 @@ void loop()
   else
   {
     checkModeButtons(); // pins 50/51 — prev/next mode
-    switch (currentDrawMode)
+    handleSerialInput();
+    if (currentDrawMode != MODE_MANUAL && joystickMoved())
     {
-    case MODE_OUTLINE:
-      traceCanvasOutline();
-      break;
-    case MODE_CORNERS:
-      drawRandomCorner();
-      break;
-    case MODE_LETTERS:
-      drawRandomLetter();
-      break;
-    case MODE_CIRCLE:
-      drawCircleMode();
-      break;
-    case MODE_MANUAL:
-      handleManualMode();
-      break;
-    case MODE_SERIAL:
-      handleSerialInput();
-      break;
-    case MODE_MORSE:
-      drawMorseMode();
-      break;
-    case MODE_DAYNIGHT:
-      handleDayNightMode();
-      break;
+      setDrawMode(MODE_MANUAL);
+      serialInterrupt = true;
+    }
+    if (!serialInterrupt)
+    {
+      switch (currentDrawMode)
+      {
+      case MODE_OUTLINE:
+        traceCanvasOutline();
+        break;
+      case MODE_CORNERS:
+        drawRandomCorner();
+        break;
+      case MODE_LETTERS:
+        drawRandomLetter();
+        break;
+      case MODE_CIRCLE:
+        drawCircleMode();
+        break;
+      case MODE_MANUAL:
+        handleManualMode();
+        break;
+      case MODE_MORSE:
+        drawMorseMode();
+        break;
+      case MODE_DAYNIGHT:
+        handleDayNightMode();
+        break;
+      case MODE_PLAYBACK:
+        handlePlaybackMode();
+        break;
+      }
+    }
+    // Execute any pending serial movement command
+    if (pendingSerial != SP_NONE)
+    {
+      SerialPending cmd = pendingSerial;
+      float cx = pendingSerialX, cy = pendingSerialY;
+      pendingSerial = SP_NONE;
+      serialInterrupt = false;
+      if (cmd == SP_MOVE)
+        moveToCanvas(cx, cy);
+      else if (cmd == SP_DRAW)
+        drawToCanvas(cx, cy, currentLaserPower);
+      else if (cmd == SP_HOME)
+        moveToCanvas(0.0f, 0.0f);
+      Serial.println(F("OK"));
+    }
+    else if (pendingWord[0] != '\0')
+    {
+      serialInterrupt = false;
+      drawSerialWord(pendingWord);
+      pendingWord[0] = '\0';
+      Serial.println(F("OK"));
+    }
+    else
+    {
+      serialInterrupt = false;
     }
     updateLedBlink();
   }
