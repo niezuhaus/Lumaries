@@ -1,5 +1,4 @@
 #include <AccelStepper.h>
-#include <Keypad.h>
 
 // ─── Hardware pins (RAMPS 1.4) ───────────────────────────────────────────────
 #define Y_STEP 54
@@ -47,7 +46,7 @@ enum DrawMode
   MODE_CORNERS, // 2 — random small 90° corner shapes
   MODE_LETTERS, // 3 — random German characters at random positions
   MODE_CIRCLE,  // 4 — continuous circle in canvas centre
-  MODE_MANUAL,  // 5 — poti/keypad jog with laser on — freehand drawing
+  MODE_MANUAL,  // 5 — poti jog with laser on — freehand drawing
   MODE_SERIAL,  // 6 — accepts M/L/P/H/S commands over serial
   MODE_MORSE,   // 7 — draws morse-coded words at random positions
   MODE_DAYNIGHT // 8 — 5-min laser drawing / 1-min sun DMX cycle
@@ -94,18 +93,6 @@ const unsigned long BLINK_PAUSE_MS = 700;
 const int SERIAL_BUF_SIZE = 32;
 char serialBuf[SERIAL_BUF_SIZE];
 int serialBufPos = 0;
-
-// ─── Keypad ───────────────────────────────────────────────────────────────────
-const byte ROWS = 4;
-const byte COLS = 4;
-char hexaKeys[ROWS][COLS] = {
-    {'1', '2', '3', 'A'},
-    {'4', '5', '6', 'B'},
-    {'7', '8', '9', 'C'},
-    {'*', '0', '#', 'D'}};
-byte rowPins[ROWS] = {23, 25, 27, 29};
-byte colPins[COLS] = {31, 33, 35, 37};
-Keypad keypad = Keypad(makeKeymap(hexaKeys), rowPins, colPins, ROWS, COLS);
 
 // ─── Stepper instances ───────────────────────────────────────────────────────
 AccelStepper xStepper(AccelStepper::DRIVER, Y_STEP, Y_DIR);
@@ -572,109 +559,9 @@ void handleCalibrationSerial()
   }
 }
 
-// ─── Keypad ───────────────────────────────────────────────────────────────────
-// Calibration:  2/4/6/8 jog | 5 save point | A restart
-// READY manual: 2/4/6/8 jog | 5 pen toggle
-// READY other:  1→OUTLINE 2→CORNERS 3→LETTERS 4→CIRCLE 5→MANUAL 6→SERIAL 7→MORSE 8→DAYNIGHT
-//               A restart calibration | # cycle modes
-void handleKeypad()
-{
-  keypad.getKeys();
-  for (int i = 0; i < LIST_MAX; i++)
-  {
-    if (keypad.key[i].kchar == NO_KEY)
-      continue;
-    KeyState s = keypad.key[i].kstate;
-    if (s != PRESSED && s != HOLD)
-      continue;
-    char k = keypad.key[i].kchar;
-    unsigned long until = millis() + KEY_JOG_MS;
-
-    bool inManual = (currentState == READY && currentDrawMode == MODE_MANUAL);
-    bool inCalib = (currentState != READY);
-
-    // Jog keys — act on PRESSED and HOLD during calibration or manual draw.
-    // 'continue' skips the mode-select logic below for these keys.
-    if (inCalib || inManual)
-    {
-      switch (k)
-      {
-      case '4':
-        keyJogXSpeed = -JOG_MAX_SPEED;
-        keyJogXUntil = until;
-        continue;
-      case '6':
-        keyJogXSpeed = JOG_MAX_SPEED;
-        keyJogXUntil = until;
-        continue;
-      case '2':
-        keyJogYSpeed = -JOG_MAX_SPEED;
-        keyJogYUntil = until;
-        continue;
-      case '8':
-        keyJogYSpeed = JOG_MAX_SPEED;
-        keyJogYUntil = until;
-        continue;
-      }
-    }
-
-    if (s != PRESSED)
-      continue; // mode-select and actions: PRESSED only
-
-    if (inCalib)
-    {
-      if (k == '5')
-        saveCalibrationPoint();
-      if (k == 'A')
-        restartCalibration();
-      continue;
-    }
-
-    // READY state — number keys select modes directly
-    switch (k)
-    {
-    case '1':
-      setDrawMode(MODE_OUTLINE);
-      break;
-    case '2':
-      setDrawMode(MODE_CORNERS);
-      break;
-    case '3':
-      setDrawMode(MODE_LETTERS);
-      break;
-    case '4':
-      setDrawMode(MODE_CIRCLE);
-      break;
-    case '5':
-      if (inManual)
-        setLaser(laserEnabled ? 0 : currentLaserPower);
-      else
-        setDrawMode(MODE_MANUAL);
-      break;
-    case '6':
-      if (!inManual)
-        setDrawMode(MODE_SERIAL); // '6' jogs in manual — handled above
-      break;
-    case '7':
-      setDrawMode(MODE_MORSE);
-      break;
-    case '8':
-      setDrawMode(MODE_DAYNIGHT);
-      break;
-    case 'A':
-      restartCalibration();
-      break;
-    case '#':
-      setDrawMode((DrawMode)((currentDrawMode + 1) % DRAW_MODE_COUNT));
-      break;
-    }
-  }
-}
-
 void handleCalibrationState()
 {
   handleCalibrationSerial();
-  handleKeypad();
   jogMotors();
   if (checkButton())
     saveCalibrationPoint();
@@ -811,7 +698,6 @@ void drawSegTo(float nx, float ny)
 #define OUTLINE_CHECK()                                                      \
   do                                                                         \
   {                                                                          \
-    handleKeypad();                                                          \
     if (currentDrawMode != MODE_OUTLINE && currentDrawMode != MODE_DAYNIGHT) \
     {                                                                        \
       setLaser(0);                                                           \
@@ -966,7 +852,6 @@ void drawRandomLetter()
 #define CIRCLE_CHECK()                                                      \
   do                                                                        \
   {                                                                         \
-    handleKeypad();                                                         \
     if (currentDrawMode != MODE_CIRCLE && currentDrawMode != MODE_DAYNIGHT) \
     {                                                                       \
       setLaser(0);                                                          \
@@ -1001,9 +886,8 @@ void drawCircleMode()
 /// Freehand draw: same velocity jog as calibration, but clamped to canvas bounds.
 void handleManualMode()
 {
-  unsigned long now = millis();
-  float sx = (now < keyJogXUntil) ? keyJogXSpeed : potiToSpeed(analogRead(POTI1));
-  float sy = (now < keyJogYUntil) ? -keyJogYSpeed : potiToSpeed(analogRead(POTI2));
+  float sx = potiToSpeed(analogRead(POTI1));
+  float sy = potiToSpeed(analogRead(POTI2));
 
   // Stop each axis at the canvas edge instead of running past it
   long xPos = xStepper.currentPosition();
@@ -1069,7 +953,6 @@ float morseWordWidth(const char *word)
 #define MORSE_CHECK()                                                      \
   do                                                                       \
   {                                                                        \
-    handleKeypad();                                                        \
     if (currentDrawMode != MODE_MORSE && currentDrawMode != MODE_DAYNIGHT) \
     {                                                                      \
       setLaser(0);                                                         \
@@ -1434,8 +1317,6 @@ void setup()
 
   setLaser(currentLaserPower);
 
-  keypad.setHoldTime(150); // fire HOLD events every 150ms for smooth jog
-
   xStepper.setMaxSpeed(JOG_MAX_SPEED);
   xStepper.setAcceleration(ACCELERATION);
   yStepper.setMaxSpeed(JOG_MAX_SPEED);
@@ -1455,7 +1336,6 @@ void loop()
   }
   else
   {
-    handleKeypad();     // '#' cycles modes; '0' restarts calibration
     checkModeButtons(); // pins 50/51 — prev/next mode
     switch (currentDrawMode)
     {
