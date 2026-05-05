@@ -40,10 +40,26 @@ const int CORNER_LEN_MIN = 30;  // min arm length (0–1000 canvas units)
 const int CORNER_LEN_MAX = 200; // max arm length
 // ╠═══════════════════════════════════════════════════════════════════════════╣
 // ║  CIRCLE MODE  (sine-wave distorted circle)                                ║
-const int   CIRCLE_SEGMENTS  = 120;   // drawing resolution (more = smoother)
-const float CIRCLE_RADIUS    = 0.35f; // base radius as fraction of canvas (0.0–0.5)
-const float CIRCLE_SINE_AMP  = 0.08f; // sine wave amplitude (canvas fraction)
-const int   CIRCLE_SINE_FREQ = 5;     // number of bumps around the circle
+const int   CIRCLE_SEGMENTS   = 120;   // drawing resolution (more = smoother)
+const float CIRCLE_RADIUS     = 0.35f; // base radius as fraction of canvas (0.0–0.5)
+const float CIRCLE_SINE_AMP   = 0.08f; // first sine wave amplitude (canvas fraction)
+const int   CIRCLE_SINE_FREQ  = 5;     // first sine wave bumps around the circle
+const float CIRCLE_SINE_AMP2  = 0.04f; // second sine wave amplitude
+const int   CIRCLE_SINE_FREQ2 = 11;    // second sine wave frequency (prime avoids locking with freq1)
+const float CIRCLE_PHASE_STEP1 = 0.31f; // radians p1 advances each circle (~1/20 rotation)
+const float CIRCLE_PHASE_STEP2 = 0.17f; // radians p2 advances each circle (different rate)
+// ╠═══════════════════════════════════════════════════════════════════════════╣
+// ║  RAIN MODE  (rainstorm — streaks + lightning flashes)                     ║
+const float    RAIN_LINE_LENGTH  = 0.15f;  // streak length as fraction of canvas
+const float    RAIN_DRAW_SPEED   = 80.0f;  // steps/sec — fast rain (vs DRAW_MAX_SPEED 25)
+const int      RAIN_FLASH_CHANCE = 8;      // 1-in-N chance of lightning after each streak
+const int      RAIN_FLASH_COUNT  = 3;      // flash pulses per lightning strike
+const uint16_t RAIN_FLASH_ON_MS  = 30;     // ms laser-on per flash pulse
+const uint16_t RAIN_FLASH_OFF_MS = 60;     // ms laser-off between flash pulses
+// ╠═══════════════════════════════════════════════════════════════════════════╣
+// ║  SPIRAL MODE  (rectangular spiral expanding from centre)                  ║
+const float SPIRAL_STEP       = 0.025f; // gap between rings (canvas fraction) — 0.025 → ~20 rings
+const float SPIRAL_SPEED_MULT = 3.5f;   // speed multiplier at the canvas edge vs. centre
 // ╠═══════════════════════════════════════════════════════════════════════════╣
 // ║  LETTERS MODE                                                             ║
 const int   LETTER_SCALE_MIN = 15;  // min glyph scale (÷1000 → canvas fraction)
@@ -73,15 +89,17 @@ SystemState currentState = CALIBRATE_LEFT;
 // ─── Draw modes (active when READY) ──────────────────────────────────────────
 enum DrawMode
 {
-  MODE_CIRCLE,   // 1 — sine-wave distorted circle, first mode after calibration
-  MODE_CORNERS,  // 2 — random small 90° corner shapes
-  MODE_MANUAL,   // 3 — poti jog with laser on — freehand drawing
-  MODE_PLAYBACK, // 4 — replay stored recordings in sequence
-  MODE_LETTERS,  // 5 — random German characters at random positions
-  MODE_DAYNIGHT  // 6 — 5-min laser drawing / 1-min sun DMX cycle
+  MODE_RAIN,     // 1 — rainstorm: falling streaks + lightning flashes
+  MODE_SPIRAL,   // 2 — rectangular spiral expanding from canvas centre
+  MODE_CIRCLE,   // 3 — sine-wave distorted circle
+  MODE_CORNERS,  // 4 — random small 90° corner shapes
+  MODE_MANUAL,   // 5 — poti jog with laser on — freehand drawing
+  MODE_PLAYBACK, // 6 — replay stored recordings in sequence
+  MODE_LETTERS,  // 7 — random German characters at random positions
+  MODE_DAYNIGHT  // 8 — 5-min laser drawing / 1-min sun DMX cycle
 };
-DrawMode currentDrawMode = MODE_CIRCLE;
-const int DRAW_MODE_COUNT = 6;
+DrawMode currentDrawMode = MODE_RAIN;
+const int DRAW_MODE_COUNT = 8;
 
 // ─── Canvas geometry (filled after calibration) ───────────────────────────────
 long X_left = 0;
@@ -221,8 +239,8 @@ uint32_t cloudSunnyUntil = 0;
 uint32_t lastDmxMs = 0;
 
 // Sub-modes cycled during the laser drawing phase
-const DrawMode DN_SUBMODES[] = {MODE_CIRCLE, MODE_CORNERS, MODE_LETTERS};
-const int DN_SUBMODE_COUNT = 3;
+const DrawMode DN_SUBMODES[] = {MODE_RAIN, MODE_SPIRAL, MODE_CIRCLE, MODE_CORNERS, MODE_LETTERS};
+const int DN_SUBMODE_COUNT = 5;
 
 enum DNPhase
 {
@@ -449,12 +467,12 @@ void finalizeCalibration()
   Y_top = 0;
 
   currentState = READY;
-  currentDrawMode = MODE_CIRCLE;
+  currentDrawMode = MODE_RAIN;
   Serial.print(F("READY W="));
   Serial.print(canvas_width_steps);
   Serial.print(F(" H="));
   Serial.print(canvas_height_steps);
-  Serial.println(F(" MODE: CIRCLE"));
+  Serial.println(F(" MODE: RAIN"));
 }
 
 void saveCalibrationPoint()
@@ -528,6 +546,16 @@ void setDrawMode(DrawMode m)
   currentDrawMode = m;
   switch (m)
   {
+  case MODE_RAIN:
+    xStepper.setMaxSpeed(RAIN_DRAW_SPEED);
+    yStepper.setMaxSpeed(RAIN_DRAW_SPEED);
+    Serial.println(F("MODE: RAIN"));
+    break;
+  case MODE_SPIRAL:
+    xStepper.setMaxSpeed(DRAW_MAX_SPEED);
+    yStepper.setMaxSpeed(DRAW_MAX_SPEED);
+    Serial.println(F("MODE: SPIRAL"));
+    break;
   case MODE_CIRCLE:
     xStepper.setMaxSpeed(DRAW_MAX_SPEED);
     yStepper.setMaxSpeed(DRAW_MAX_SPEED);
@@ -659,8 +687,103 @@ void drawSegTo(float nx, float ny)
   waitForMotors();
 }
 
-// Sine-wave distorted circle: r(θ) = CIRCLE_RADIUS + CIRCLE_SINE_AMP * sin(CIRCLE_SINE_FREQ * θ + phase)
-// phase is randomised each call so the bumps rotate to a different position every iteration.
+// Rainstorm: each call draws one falling streak (vertical or 45°) then
+// occasionally fires a lightning flash (laser pulses at current position).
+#define RAIN_CHECK() \
+  do { \
+    if (serialInterrupt) { setLaser(0); return; } \
+    if (currentDrawMode != MODE_RAIN && currentDrawMode != MODE_DAYNIGHT) { setLaser(0); return; } \
+    if (currentDrawMode == MODE_DAYNIGHT && dnShouldSwitch()) { setLaser(0); return; } \
+  } while (0)
+
+void drawRainMode()
+{
+  xStepper.setMaxSpeed(RAIN_DRAW_SPEED);
+  yStepper.setMaxSpeed(RAIN_DRAW_SPEED);
+
+  // Angle: 0 = straight down, PI/4 = 45° right-leaning (wind-driven)
+  float angle = (random(2) == 0) ? 0.0f : (PI / 4.0f);
+  float dx = sin(angle) * RAIN_LINE_LENGTH;
+  float dy = cos(angle) * RAIN_LINE_LENGTH;
+
+  int maxSX = max(1, (int)((1.0f - dx) * 1000));
+  int maxSY = max(1, (int)((1.0f - dy) * 1000));
+  float sx = random(0, maxSX + 1) / 1000.0f;
+  float sy = random(0, maxSY + 1) / 1000.0f;
+
+  moveToCanvas(sx, sy);
+  RAIN_CHECK();
+
+  setLaser(currentLaserPower);
+  drawSegTo(sx + dx, sy + dy);
+  setLaser(0);
+  RAIN_CHECK();
+
+  // Lightning: flash the laser at its current position
+  if (random(RAIN_FLASH_CHANCE) == 0)
+  {
+    for (int i = 0; i < RAIN_FLASH_COUNT; i++)
+    {
+      setLaser(currentLaserPower);
+      delay(RAIN_FLASH_ON_MS);
+      setLaser(0);
+      if (i < RAIN_FLASH_COUNT - 1)
+        delay(RAIN_FLASH_OFF_MS);
+    }
+    RAIN_CHECK();
+  }
+}
+
+// Rectangular spiral expanding from canvas centre.
+// Path: right→up→left→down, segment length increases by 1 every two turns.
+// Laser stays on throughout; only turns off once per spiral for the center reposition.
+#define SPIRAL_CHECK() \
+  do { \
+    if (serialInterrupt) { setLaser(0); return; } \
+    if (currentDrawMode != MODE_SPIRAL && currentDrawMode != MODE_DAYNIGHT) { setLaser(0); return; } \
+    if (currentDrawMode == MODE_DAYNIGHT && dnShouldSwitch()) { setLaser(0); return; } \
+  } while (0)
+
+void drawSpiralMode()
+{
+  static const float DX[] = { 1,  0, -1,  0};
+  static const float DY[] = { 0,  1,  0, -1};
+  const float CX = 0.5f, CY = 0.5f;
+
+  setLaser(currentLaserPower);
+
+  float x = CX, y = CY;
+  int   len  = 1;
+  int   dir  = 0;
+  int   pair = 0;
+
+  while (true)
+  {
+    float nx = x + DX[dir] * len * SPIRAL_STEP;
+    float ny = y + DY[dir] * len * SPIRAL_STEP;
+    if (nx < 0.0f || nx > 1.0f || ny < 0.0f || ny > 1.0f) break;
+
+    // Chebyshev distance from centre, normalised 0 (centre) → 1 (edge)
+    float dx = x - CX; if (dx < 0) dx = -dx;
+    float dy = y - CY; if (dy < 0) dy = -dy;
+    float dist = (dx > dy ? dx : dy) * 2.0f;
+    float spd  = DRAW_MAX_SPEED * (1.0f + (SPIRAL_SPEED_MULT - 1.0f) * dist);
+    xStepper.setMaxSpeed(spd);
+    yStepper.setMaxSpeed(spd);
+
+    drawSegTo(nx, ny);
+    x = nx; y = ny;
+    SPIRAL_CHECK();
+
+    dir = (dir + 1) % 4;
+    if (++pair >= 2) { pair = 0; len++; }
+  }
+  // Spiral reached the edge — restart from centre (mode change via button only)
+}
+
+// Double sine-wave distorted circle:
+//   r(θ) = CIRCLE_RADIUS + A1*sin(F1*θ + p1) + A2*sin(F2*θ + p2)
+// Both phases are randomised each call for continuous variation.
 #define CIRCLE_CHECK() \
   do { \
     if (serialInterrupt) { setLaser(0); return; } \
@@ -670,22 +793,31 @@ void drawSegTo(float nx, float ny)
 
 void drawCircleMode()
 {
-  const float CX    = 0.5f;
-  const float CY    = 0.5f;
-  float phase = random(0, 6284) / 1000.0f; // 0 – 2π in 0.001 rad steps
-  float r0 = CIRCLE_RADIUS + CIRCLE_SINE_AMP * sin(phase);
-  moveToCanvas(CX + r0, CY);
-  CIRCLE_CHECK();
+  const float CX = 0.5f;
+  const float CY = 0.5f;
+  static float p1 = 0.0f;
+  static float p2 = 0.0f;
+  p1 += CIRCLE_PHASE_STEP1;
+  p2 += CIRCLE_PHASE_STEP2;
+  float r0 = CIRCLE_RADIUS
+           + CIRCLE_SINE_AMP  * sin(p1)
+           + CIRCLE_SINE_AMP2 * sin(p2);
+  // Laser stays on: drawSegTo keeps it lit during the move to the new start point.
+  // On first entry the laser may not be on yet, so force it here.
   setLaser(currentLaserPower);
+  drawSegTo(CX + r0, CY);
+  CIRCLE_CHECK();
   for (int i = 1; i <= CIRCLE_SEGMENTS; i++)
   {
     float a = (float)i * 2.0f * PI / CIRCLE_SEGMENTS;
-    float r = CIRCLE_RADIUS + CIRCLE_SINE_AMP * sin(CIRCLE_SINE_FREQ * a + phase);
+    float r = CIRCLE_RADIUS
+            + CIRCLE_SINE_AMP  * sin(CIRCLE_SINE_FREQ  * a + p1)
+            + CIRCLE_SINE_AMP2 * sin(CIRCLE_SINE_FREQ2 * a + p2);
     drawSegTo(CX + r * cos(a), CY + r * sin(a));
     if (i == CIRCLE_SEGMENTS / 2)
       CIRCLE_CHECK();
   }
-  setLaser(0);
+  // No setLaser(0) — laser stays on so the next iteration's reposition is also drawn.
 }
 
 // Draw one random 90° corner shape anywhere on the canvas
@@ -1062,6 +1194,9 @@ void handleDayNightMode()
       dmxSend(sunLevel);
     switch (dnSubMode)
     {
+    case MODE_SPIRAL:
+      drawSpiralMode();
+      break;
     case MODE_CIRCLE:
       drawCircleMode();
       break;
@@ -1321,6 +1456,12 @@ void loop()
     {
       switch (currentDrawMode)
       {
+      case MODE_RAIN:
+        drawRainMode();
+        break;
+      case MODE_SPIRAL:
+        drawSpiralMode();
+        break;
       case MODE_CIRCLE:
         drawCircleMode();
         break;
