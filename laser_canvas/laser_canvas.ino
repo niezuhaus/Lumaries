@@ -39,6 +39,12 @@ const uint8_t  PLAYBACK_MAX_NOISE = 80; // max position jitter for oldest record
 const int CORNER_LEN_MIN = 30;  // min arm length (0–1000 canvas units)
 const int CORNER_LEN_MAX = 200; // max arm length
 // ╠═══════════════════════════════════════════════════════════════════════════╣
+// ║  CIRCLE MODE  (sine-wave distorted circle)                                ║
+const int   CIRCLE_SEGMENTS  = 120;   // drawing resolution (more = smoother)
+const float CIRCLE_RADIUS    = 0.35f; // base radius as fraction of canvas (0.0–0.5)
+const float CIRCLE_SINE_AMP  = 0.08f; // sine wave amplitude (canvas fraction)
+const int   CIRCLE_SINE_FREQ = 5;     // number of bumps around the circle
+// ╠═══════════════════════════════════════════════════════════════════════════╣
 // ║  LETTERS MODE                                                             ║
 const int   LETTER_SCALE_MIN = 15;  // min glyph scale (÷1000 → canvas fraction)
 const int   LETTER_SCALE_MAX = 55;  // max glyph scale
@@ -67,14 +73,15 @@ SystemState currentState = CALIBRATE_LEFT;
 // ─── Draw modes (active when READY) ──────────────────────────────────────────
 enum DrawMode
 {
-  MODE_CORNERS,  // 1 — random small 90° corner shapes
-  MODE_MANUAL,   // 2 — poti jog with laser on — freehand drawing
-  MODE_PLAYBACK, // 3 — replay stored recordings in sequence
-  MODE_LETTERS,  // 4 — random German characters at random positions
-  MODE_DAYNIGHT  // 5 — 5-min laser drawing / 1-min sun DMX cycle
+  MODE_CIRCLE,   // 1 — sine-wave distorted circle, first mode after calibration
+  MODE_CORNERS,  // 2 — random small 90° corner shapes
+  MODE_MANUAL,   // 3 — poti jog with laser on — freehand drawing
+  MODE_PLAYBACK, // 4 — replay stored recordings in sequence
+  MODE_LETTERS,  // 5 — random German characters at random positions
+  MODE_DAYNIGHT  // 6 — 5-min laser drawing / 1-min sun DMX cycle
 };
-DrawMode currentDrawMode = MODE_CORNERS;
-const int DRAW_MODE_COUNT = 5;
+DrawMode currentDrawMode = MODE_CIRCLE;
+const int DRAW_MODE_COUNT = 6;
 
 // ─── Canvas geometry (filled after calibration) ───────────────────────────────
 long X_left = 0;
@@ -214,8 +221,8 @@ uint32_t cloudSunnyUntil = 0;
 uint32_t lastDmxMs = 0;
 
 // Sub-modes cycled during the laser drawing phase
-const DrawMode DN_SUBMODES[] = {MODE_CORNERS, MODE_LETTERS};
-const int DN_SUBMODE_COUNT = 2;
+const DrawMode DN_SUBMODES[] = {MODE_CIRCLE, MODE_CORNERS, MODE_LETTERS};
+const int DN_SUBMODE_COUNT = 3;
 
 enum DNPhase
 {
@@ -442,12 +449,12 @@ void finalizeCalibration()
   Y_top = 0;
 
   currentState = READY;
-  currentDrawMode = MODE_CORNERS;
+  currentDrawMode = MODE_CIRCLE;
   Serial.print(F("READY W="));
   Serial.print(canvas_width_steps);
   Serial.print(F(" H="));
   Serial.print(canvas_height_steps);
-  Serial.println(F(" MODE: CORNERS"));
+  Serial.println(F(" MODE: CIRCLE"));
 }
 
 void saveCalibrationPoint()
@@ -521,6 +528,11 @@ void setDrawMode(DrawMode m)
   currentDrawMode = m;
   switch (m)
   {
+  case MODE_CIRCLE:
+    xStepper.setMaxSpeed(DRAW_MAX_SPEED);
+    yStepper.setMaxSpeed(DRAW_MAX_SPEED);
+    Serial.println(F("MODE: CIRCLE"));
+    break;
   case MODE_CORNERS:
     xStepper.setMaxSpeed(DRAW_MAX_SPEED);
     yStepper.setMaxSpeed(DRAW_MAX_SPEED);
@@ -645,6 +657,35 @@ void drawSegTo(float nx, float ny)
   xStepper.moveTo(normToStepsX(nx));
   yStepper.moveTo(normToStepsY(ny));
   waitForMotors();
+}
+
+// Sine-wave distorted circle: r(θ) = CIRCLE_RADIUS + CIRCLE_SINE_AMP * sin(CIRCLE_SINE_FREQ * θ + phase)
+// phase is randomised each call so the bumps rotate to a different position every iteration.
+#define CIRCLE_CHECK() \
+  do { \
+    if (serialInterrupt) { setLaser(0); return; } \
+    if (currentDrawMode != MODE_CIRCLE && currentDrawMode != MODE_DAYNIGHT) { setLaser(0); return; } \
+    if (currentDrawMode == MODE_DAYNIGHT && dnShouldSwitch()) { setLaser(0); return; } \
+  } while (0)
+
+void drawCircleMode()
+{
+  const float CX    = 0.5f;
+  const float CY    = 0.5f;
+  float phase = random(0, 6284) / 1000.0f; // 0 – 2π in 0.001 rad steps
+  float r0 = CIRCLE_RADIUS + CIRCLE_SINE_AMP * sin(phase);
+  moveToCanvas(CX + r0, CY);
+  CIRCLE_CHECK();
+  setLaser(currentLaserPower);
+  for (int i = 1; i <= CIRCLE_SEGMENTS; i++)
+  {
+    float a = (float)i * 2.0f * PI / CIRCLE_SEGMENTS;
+    float r = CIRCLE_RADIUS + CIRCLE_SINE_AMP * sin(CIRCLE_SINE_FREQ * a + phase);
+    drawSegTo(CX + r * cos(a), CY + r * sin(a));
+    if (i == CIRCLE_SEGMENTS / 2)
+      CIRCLE_CHECK();
+  }
+  setLaser(0);
 }
 
 // Draw one random 90° corner shape anywhere on the canvas
@@ -1021,6 +1062,9 @@ void handleDayNightMode()
       dmxSend(sunLevel);
     switch (dnSubMode)
     {
+    case MODE_CIRCLE:
+      drawCircleMode();
+      break;
     case MODE_CORNERS:
       drawRandomCorner();
       break;
@@ -1277,6 +1321,9 @@ void loop()
     {
       switch (currentDrawMode)
       {
+      case MODE_CIRCLE:
+        drawCircleMode();
+        break;
       case MODE_CORNERS:
         drawRandomCorner();
         break;
