@@ -14,8 +14,9 @@
 #define POTI1 A12       // X-axis jog
 #define POTI2 A11     // Y-axis jog
 #define LASER_PIN 45  // PWM
-#define DMX_PIN 2     // RS485 direction-enable (tied DE+/RE-)
+#define DMX_PIN 4     // RS485 direction-enable (tied DE+/RE-)
                       // RS485 data uses Serial1 TX (pin 18 on Mega)
+#define REC_LED_PIN 2 // PWM recording-indicator LED (red)
 #define DMX_ADDRESS 1 // fixture base channel (1-based)
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
@@ -30,11 +31,17 @@ const int   POTI_MAX       = 650;    // joystick dead-zone upper bound (0–1023
 const int CAL_LASER_POWER = 255;     // laser brightness during calibration (0–255)
 // ╠═══════════════════════════════════════════════════════════════════════════╣
 // ║  RECORDING & PLAYBACK                                                     ║
-const uint8_t  MAX_RECORDINGS    = 15;  // max stored shapes  (RAM: N×POINTS×5 bytes)
+const uint8_t MAX_RECORDINGS = 20;      // max stored shapes  (RAM: N×POINTS×5 bytes)
 const uint8_t  MAX_REC_POINTS    = 50;  // max waypoints per shape
 const uint32_t REC_SAMPLE_MS     = 150; // ms between waypoint samples while recording
 const uint8_t  PLAYBACK_MAX_NOISE = 80; // max position jitter for oldest recording (0–1000 units)
                                         // newest = 0 noise, oldest = PLAYBACK_MAX_NOISE
+const uint8_t REC_LED_BRIGHTNESS = 255; // PWM brightness of recording-indicator LED (0–255)
+const uint32_t AUTO_CYCLE_MS = 60000UL; // ms each auto mode runs before cycling to next
+const uint32_t REC_IDLE_STOP_MS  = 5000UL; // ms joystick idle → auto-stop recording + go to playback
+const uint32_t IDLE_BREATH_MS    = 4000UL; // period of one idle-breath pulse in manual mode (ms)
+const uint8_t  IDLE_MIN_LASER    = 50;     // laser floor during idle breathing (0–255)
+const uint8_t INTERMODE_PLAYBACK_MAX = 3; // recordings replayed between mode cycles (0 = none)
 // ╠═══════════════════════════════════════════════════════════════════════════╣
 // ║  CORNERS MODE                                                             ║
 const int CORNER_LEN_MIN = 30;  // min arm length (0–1000 canvas units)
@@ -66,14 +73,17 @@ const float SPIRAL_SPEED_MULT = 3.5f;   // speed multiplier at the canvas edge v
 const int   LETTER_SCALE_MIN = 15;  // min glyph scale (÷1000 → canvas fraction)
 const int   LETTER_SCALE_MAX = 55;  // max glyph scale
 // ╠═══════════════════════════════════════════════════════════════════════════╣
-// ║  DAY/NIGHT MODE                                                           ║
-const uint32_t DN_LASER_MS = 5UL * 60UL * 1000UL; // ms of laser drawing per cycle (5 min)
-const uint32_t DN_SUN_MS   = 1UL * 60UL * 1000UL; // ms of DMX sun effect per cycle (1 min)
-// ║  DMX cloud timing (used inside DN sun phase)                              ║
-const uint16_t CLOUD_SUNNY_MIN_MS  = 3000;  // min sunny gap between clouds
-const uint16_t CLOUD_SUNNY_MAX_MS  = 15000; // max sunny gap between clouds
-const uint16_t CLOUD_SCATTER_GAP_MIN = 300; // ms between scattered cloud repetitions
-const uint16_t CLOUD_SCATTER_GAP_MAX = 900; // ms
+// ║  DAY MODE  (automatic sun cycle — triggers when idle long enough)         ║
+const uint32_t DAY_IDLE_MS = 10UL * 60UL * 1000UL; // idle time before day mode triggers (10 min)
+const uint32_t DAY_QUIET_MS = 1UL * 60UL * 1000UL; // no-recording window required before trigger (1 min)
+const uint32_t DAY_CLOUD_MS = 2UL * 60UL * 1000UL; // duration of cloud simulation phase (2 min)
+const uint32_t DAY_FADE_MS = 5000UL;               // laser↔DMX crossfade duration (ms)
+const uint8_t  DAY_MIN_LASER = 20;                 // laser never goes below this during day mode (0–255)
+// ║  DMX cloud timing (used during day mode cloud phase)                      ║
+const uint16_t CLOUD_SUNNY_MIN_MS = 3000;
+const uint16_t CLOUD_SUNNY_MAX_MS = 15000;
+const uint16_t CLOUD_SCATTER_GAP_MIN = 300;
+const uint16_t CLOUD_SCATTER_GAP_MAX = 900;
 // ╚═══════════════════════════════════════════════════════════════════════════╝
 
 // ─── State machine ────────────────────────────────────────────────────────────
@@ -90,17 +100,16 @@ SystemState currentState = CALIBRATE_LEFT;
 // ─── Draw modes (active when READY) ──────────────────────────────────────────
 enum DrawMode
 {
-  MODE_CIRCLE,   // 1 — sine-wave distorted circley
-  MODE_MANUAL,   // 5 — poti jog with laser on — freehand drawing
-  MODE_PLAYBACK, // 6 — replay stored recordings in sequence
-  MODE_SPIRAL,   // 2 — rectangular spiral expanding from canvas centre
-  MODE_CORNERS,  // 4 — random small 90° corner shapes
-  MODE_RAIN,     // 3 — rainstorm: falling streaks + lightning flashes
-  MODE_LETTERS,  // 7 — random German characters at random positions
-  MODE_DAYNIGHT  // 8 — 5-min laser drawing / 1-min sun DMX cycle
+  MODE_CIRCLE,   // sine-wave distorted circle
+  MODE_MANUAL,   // poti jog with laser on — freehand / recording
+  MODE_PLAYBACK, // replay stored recordings
+  MODE_SPIRAL,   // rectangular spiral from canvas centre
+  MODE_CORNERS,  // random 90° corner shapes
+  MODE_RAIN,     // rainstorm: falling streaks + lightning
+  MODE_LETTERS   // random German characters
 };
 DrawMode currentDrawMode = MODE_RAIN;
-const int DRAW_MODE_COUNT = 8;
+const int DRAW_MODE_COUNT = 7;
 
 // ─── Canvas geometry (filled after calibration) ───────────────────────────────
 long X_left = 0;
@@ -114,11 +123,16 @@ long canvas_height_steps = 0;
 int currentLaserPower = 255;
 bool laserEnabled = false;
 
-// ─── Button debounce ─────────────────────────────────────────────────────────
-unsigned long lastButtonTime = 0;
-unsigned long lastPrevTime = 0;
-unsigned long lastNextTime = 0;
-const unsigned long DEBOUNCE_MS = 200;
+// ─── Button debounce / long-press ────────────────────────────────────────────
+unsigned long lastPrevTime   = 0;
+unsigned long lastNextTime   = 0;
+const unsigned long DEBOUNCE_MS   = 200;
+const unsigned long LONG_PRESS_MS = 700;  // hold threshold for long-press (ms)
+bool          btnDown        = false;
+unsigned long btnPressedAt   = 0;
+
+enum BtnEvent { BTN_NONE, BTN_SHORT, BTN_LONG };
+BtnEvent curBtnEv = BTN_NONE;  // set once per loop tick
 
 // ─── LED blink state ─────────────────────────────────────────────────────────
 int blinkTarget = 1; // how many blinks per cycle
@@ -152,6 +166,16 @@ bool     isRecording    = false;
 uint8_t  recActiveIdx   = 0;
 uint32_t lastSampleMs   = 0;
 uint8_t  lastPlayedIdx  = 255;  // 255 = none yet
+
+// ─── Auto-cycle state ────────────────────────────────────────────────────────
+uint32_t modeStartMs       = 0;          // millis() when current draw mode started
+bool     inInterMode       = false;      // replaying recordings between auto-mode cycles
+uint8_t  interModeLeft     = 0;          // recordings remaining in inter-mode phase
+DrawMode postInterMode     = MODE_RAIN;  // mode to enter after inter-mode playback
+uint32_t lastJoyMoveMs     = 0;          // millis() of last joystick move (idle-stop detection)
+bool     autoRecordEnabled = false;      // set on entry to manual from another mode; joystick triggers recording once
+bool     manualJoyAtRest   = true;       // edge-detect: was joystick at rest before this movement?
+bool     replayNewestOnce  = false;      // play newest recording once on next playback tick, then go to manual
 
 // ─── Stepper instances ───────────────────────────────────────────────────────
 AccelStepper xStepper(AccelStepper::DRIVER, Y_STEP, Y_DIR);
@@ -239,18 +263,23 @@ uint32_t cloudStateMs = 0;
 uint32_t cloudSunnyUntil = 0;
 uint32_t lastDmxMs = 0;
 
-// Sub-modes cycled during the laser drawing phase
-const DrawMode DN_SUBMODES[] = {MODE_RAIN, MODE_SPIRAL, MODE_CIRCLE, MODE_CORNERS, MODE_LETTERS};
-const int DN_SUBMODE_COUNT = 5;
+// ─── Auto-mode cycle (prev/next buttons skip MODE_MANUAL) ────────────────────
+const DrawMode AUTO_MODES[] = {MODE_CIRCLE, MODE_PLAYBACK, MODE_SPIRAL, MODE_CORNERS, MODE_RAIN, MODE_LETTERS};
+const int AUTO_MODE_COUNT = 6;
 
-enum DNPhase
+// ─── Day mode state ──────────────────────────────────────────────────────────
+enum DayPhase
 {
-  DN_DRAWING,
-  DN_SUN
+  DAY_NONE,
+  DAY_FADE_IN,
+  DAY_CLOUDS,
+  DAY_FADE_OUT
 };
-DNPhase dnPhase = DN_DRAWING;
-uint32_t dnPhaseStart = 0;
-DrawMode dnSubMode = MODE_CORNERS;
+DayPhase dayPhase = DAY_NONE;
+uint32_t dayPhaseStart = 0;
+uint32_t lastDayModeEndMs = 0; // millis() when last day mode finished (0 = startup)
+uint32_t lastRecordingMs = 0;  // millis() when last recording was saved (0 = none yet)
+int dayFadeLaserFrom = 0;      // laser power at start of fade-in
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  LASER
@@ -262,17 +291,22 @@ void setLaser(int power)
   analogWrite(LASER_PIN, laserEnabled ? currentLaserPower : 0);
 }
 
-// 3 quick laser blinks to confirm a calibration point was saved
-void laserConfirmBlink()
+// 3 quick blinks to confirm a calibration point or recording start/stop.
+// Pass withRecLed=true to blink the REC LED in sync with the laser.
+void laserConfirmBlink(bool withRecLed = false)
 {
   int pwr = (currentState != READY) ? CAL_LASER_POWER : currentLaserPower;
   for (int i = 0; i < 3; i++)
   {
     analogWrite(LASER_PIN, 0);
     laserEnabled = false;
+    if (withRecLed)
+      analogWrite(REC_LED_PIN, 0);
     delay(80);
     analogWrite(LASER_PIN, pwr);
     laserEnabled = true;
+    if (withRecLed)
+      analogWrite(REC_LED_PIN, REC_LED_BRIGHTNESS);
     delay(80);
   }
 }
@@ -349,18 +383,22 @@ void updateLedBlink()
 //  BUTTON
 // ═══════════════════════════════════════════════════════════════════════════════
 
-bool checkButton()
+BtnEvent checkButtonEvent()
 {
-  if (digitalRead(BTN_JOYSTICK) == LOW)
+  bool pressed = (digitalRead(BTN_JOYSTICK) == LOW);
+  if (pressed && !btnDown)
   {
-    unsigned long now = millis();
-    if (now - lastButtonTime > DEBOUNCE_MS)
-    {
-      lastButtonTime = now;
-      return true;
-    }
+    btnDown      = true;
+    btnPressedAt = millis();
   }
-  return false;
+  else if (!pressed && btnDown)
+  {
+    btnDown = false;
+    unsigned long held = millis() - btnPressedAt;
+    if (held >= LONG_PRESS_MS) return BTN_LONG;
+    if (held >= DEBOUNCE_MS)   return BTN_SHORT;
+  }
+  return BTN_NONE;
 }
 
 void checkModeButtons()
@@ -369,12 +407,26 @@ void checkModeButtons()
   if (digitalRead(BTN_PREV) == LOW && now - lastPrevTime > DEBOUNCE_MS)
   {
     lastPrevTime = now;
-    setDrawMode((DrawMode)((currentDrawMode - 1 + DRAW_MODE_COUNT) % DRAW_MODE_COUNT));
+    int idx = 0;
+    for (int i = 0; i < AUTO_MODE_COUNT; i++)
+      if (AUTO_MODES[i] == currentDrawMode)
+      {
+        idx = i;
+        break;
+      }
+    setDrawMode(AUTO_MODES[(idx - 1 + AUTO_MODE_COUNT) % AUTO_MODE_COUNT]);
   }
   if (digitalRead(BTN_NEXT) == LOW && now - lastNextTime > DEBOUNCE_MS)
   {
     lastNextTime = now;
-    setDrawMode((DrawMode)((currentDrawMode + 1) % DRAW_MODE_COUNT));
+    int idx = 0;
+    for (int i = 0; i < AUTO_MODE_COUNT; i++)
+      if (AUTO_MODES[i] == currentDrawMode)
+      {
+        idx = i;
+        break;
+      }
+    setDrawMode(AUTO_MODES[(idx + 1) % AUTO_MODE_COUNT]);
   }
 }
 
@@ -456,12 +508,19 @@ void finalizeCalibration()
   setLaser(0);
 
   currentState = READY;
-  currentDrawMode = MODE_RAIN;
   Serial.print(F("READY W="));
   Serial.print(canvas_width_steps);
   Serial.print(F(" H="));
-  Serial.print(canvas_height_steps);
-  Serial.println(F(" MODE: RAIN"));
+  Serial.println(canvas_height_steps);
+  // Pick a random starting auto mode (skip PLAYBACK when no recordings yet)
+  {
+    DrawMode pool[AUTO_MODE_COUNT];
+    int cnt = 0;
+    for (int i = 0; i < AUTO_MODE_COUNT; i++)
+      if (AUTO_MODES[i] != MODE_PLAYBACK || recCount > 0)
+        pool[cnt++] = AUTO_MODES[i];
+    setDrawMode(pool[random(cnt)]);
+  }
 }
 
 void saveCalibrationPoint()
@@ -517,7 +576,7 @@ void saveCalibrationPoint()
 void handleCalibrationState()
 {
   jogMotors();
-  if (checkButton())
+  if (checkButtonEvent() == BTN_SHORT)
     saveCalibrationPoint();
   updateLedBlink();
 }
@@ -531,8 +590,15 @@ void setDrawMode(DrawMode m)
   xStepper.stop();
   yStepper.stop();
   setLaser(0);
-  if (isRecording) { isRecording = false; recCount++; }
+  if (isRecording)
+  {
+    isRecording = false;
+    recCount++;
+    analogWrite(REC_LED_PIN, 0);
+  }
   currentDrawMode = m;
+  modeStartMs = millis();
+  inInterMode = false;
   switch (m)
   {
   case MODE_RAIN:
@@ -561,16 +627,13 @@ void setDrawMode(DrawMode m)
     Serial.println(F("MODE: LETTERS"));
     break;
   case MODE_MANUAL:
-    Serial.println(F("MODE: MANUAL"));
-    moveToCanvas(0.5f, 0.5f); // start at canvas centre
+    xStepper.setMaxSpeed(JOG_MAX_SPEED);
+    yStepper.setMaxSpeed(JOG_MAX_SPEED);
     setLaser(currentLaserPower);
-    break;
-  case MODE_DAYNIGHT:
-    dnPhase = DN_DRAWING;
-    dnPhaseStart = millis();
-    dnSubMode = DN_SUBMODES[random(DN_SUBMODE_COUNT)];
-    cloudEnterSunny();
-    Serial.println(F("MODE: DAYNIGHT (5min laser / 1min sun)"));
+    lastJoyMoveMs     = millis();
+    autoRecordEnabled = true;
+    manualJoyAtRest   = true;
+    Serial.println(F("MODE: MANUAL"));
     break;
   case MODE_PLAYBACK:
     lastPlayedIdx = 255;
@@ -597,15 +660,6 @@ long normToStepsY(float n)
   return Y_top + (long)(constrain(n, 0.0f, 1.0f) * canvas_height_steps);
 }
 
-// Returns true when the day/night phase timer has expired and a switch is due.
-bool dnShouldSwitch()
-{
-  if (currentDrawMode != MODE_DAYNIGHT)
-    return false;
-  uint32_t elapsed = millis() - dnPhaseStart;
-  return (dnPhase == DN_DRAWING) ? (elapsed >= DN_LASER_MS) : (elapsed >= DN_SUN_MS);
-}
-
 void waitForMotors()
 {
   while (xStepper.distanceToGo() != 0 || yStepper.distanceToGo() != 0)
@@ -623,22 +677,6 @@ void waitForMotors()
       xStepper.stop();
       yStepper.stop();
       break;
-    }
-    // During day/night laser phase: keep DMX fixture at full sun ~33 Hz
-    if (currentDrawMode == MODE_DAYNIGHT && dnPhase == DN_DRAWING)
-    {
-      uint32_t now = millis();
-      if (now - lastDmxMs >= 30)
-      {
-        lastDmxMs = now;
-        dmxSend(255);
-        if (dnShouldSwitch())
-        {
-          xStepper.stop();
-          yStepper.stop();
-          break;
-        }
-      }
     }
   }
 }
@@ -676,11 +714,19 @@ void drawSegTo(float nx, float ny)
 
 // Rainstorm: each call draws one falling streak (vertical or 45°) then
 // occasionally fires a lightning flash (laser pulses at current position).
-#define RAIN_CHECK() \
-  do { \
-    if (serialInterrupt) { setLaser(0); return; } \
-    if (currentDrawMode != MODE_RAIN && currentDrawMode != MODE_DAYNIGHT) { setLaser(0); return; } \
-    if (currentDrawMode == MODE_DAYNIGHT && dnShouldSwitch()) { setLaser(0); return; } \
+#define RAIN_CHECK()                  \
+  do                                  \
+  {                                   \
+    if (serialInterrupt)              \
+    {                                 \
+      setLaser(0);                    \
+      return;                         \
+    }                                 \
+    if (currentDrawMode != MODE_RAIN) \
+    {                                 \
+      setLaser(0);                    \
+      return;                         \
+    }                                 \
   } while (0)
 
 void drawRainMode()
@@ -724,11 +770,19 @@ void drawRainMode()
 // Rectangular spiral expanding from canvas centre.
 // Path: right→up→left→down, segment length increases by 1 every two turns.
 // Laser stays on throughout; only turns off once per spiral for the center reposition.
-#define SPIRAL_CHECK() \
-  do { \
-    if (serialInterrupt) { setLaser(0); return; } \
-    if (currentDrawMode != MODE_SPIRAL && currentDrawMode != MODE_DAYNIGHT) { setLaser(0); return; } \
-    if (currentDrawMode == MODE_DAYNIGHT && dnShouldSwitch()) { setLaser(0); return; } \
+#define SPIRAL_CHECK()                  \
+  do                                    \
+  {                                     \
+    if (serialInterrupt)                \
+    {                                   \
+      setLaser(0);                      \
+      return;                           \
+    }                                   \
+    if (currentDrawMode != MODE_SPIRAL) \
+    {                                   \
+      setLaser(0);                      \
+      return;                           \
+    }                                   \
   } while (0)
 
 void drawSpiralMode()
@@ -771,11 +825,19 @@ void drawSpiralMode()
 // Double sine-wave distorted circle:
 //   r(θ) = CIRCLE_RADIUS + A1*sin(F1*θ + p1) + A2*sin(F2*θ + p2)
 // Both phases are randomised each call for continuous variation.
-#define CIRCLE_CHECK() \
-  do { \
-    if (serialInterrupt) { setLaser(0); return; } \
-    if (currentDrawMode != MODE_CIRCLE && currentDrawMode != MODE_DAYNIGHT) { setLaser(0); return; } \
-    if (currentDrawMode == MODE_DAYNIGHT && dnShouldSwitch()) { setLaser(0); return; } \
+#define CIRCLE_CHECK()                  \
+  do                                    \
+  {                                     \
+    if (serialInterrupt)                \
+    {                                   \
+      setLaser(0);                      \
+      return;                           \
+    }                                   \
+    if (currentDrawMode != MODE_CIRCLE) \
+    {                                   \
+      setLaser(0);                      \
+      return;                           \
+    }                                   \
   } while (0)
 
 void drawCircleMode()
@@ -950,37 +1012,90 @@ void drawRandomLetter()
   drawGlyph(ox, oy, scale, (const int8_t *)pgm_read_word(&FONT_TABLE[idx]));
 }
 
+void startPostRecPlayback()
+{
+  replayNewestOnce = true;
+  setDrawMode(MODE_PLAYBACK); // clears inInterMode
+  inInterMode   = true;       // set AFTER setDrawMode
+  interModeLeft = 1;
+  postInterMode = MODE_MANUAL;
+}
+
+void startRecording()
+{
+  recActiveIdx = recCount;
+  recLengths[recActiveIdx] = 0;
+  isRecording = true;
+  lastSampleMs = millis();
+  laserConfirmBlink(true);
+  analogWrite(REC_LED_PIN, REC_LED_BRIGHTNESS);
+  Serial.print(F("REC start: slot "));
+  Serial.println(recCount + 1);
+}
+
 /// Freehand draw: same velocity jog as calibration, but clamped to canvas bounds.
 void handleManualMode()
 {
-  // Button: toggle recording
-  if (checkButton())
+  // Auto-start recording on first joystick movement — only when freshly entering manual mode
+  bool joyMoved = joystickMoved();
+  if (!joyMoved)
+  {
+    manualJoyAtRest = true;
+  }
+  else if (autoRecordEnabled && manualJoyAtRest && !isRecording && recCount < MAX_RECORDINGS)
+  {
+    manualJoyAtRest   = false;
+    autoRecordEnabled = false;
+    startRecording();
+  }
+  else
+  {
+    manualJoyAtRest = false;
+  }
+
+  if (joyMoved)
+    lastJoyMoveMs = millis();
+
+  // Idle auto-stop: joystick still for REC_IDLE_STOP_MS → save and go to playback
+  if (isRecording && millis() - lastJoyMoveMs >= REC_IDLE_STOP_MS)
+  {
+    isRecording = false;
+    recCount++;
+    lastRecordingMs = millis();
+    laserConfirmBlink(true);
+    analogWrite(REC_LED_PIN, 0);
+    Serial.print(F("REC idle-saved: "));
+    Serial.print(recLengths[recActiveIdx]);
+    Serial.println(F(" pts"));
+    startPostRecPlayback();
+    return;
+  }
+
+  // Button: short press toggles recording (long press handled in loop → playback toggle)
+  if (curBtnEv == BTN_SHORT)
   {
     if (!isRecording)
     {
       if (recCount < MAX_RECORDINGS)
       {
-        recActiveIdx = recCount;
-        recLengths[recActiveIdx] = 0;
-        isRecording = true;
-        lastSampleMs = millis();
-        laserConfirmBlink();
-        Serial.print(F("REC start: slot "));
-        Serial.println(recCount + 1);
+        startRecording();
       }
       else
       {
-        Serial.println(F("REC full (10/10) — use C to recalibrate and clear"));
+        Serial.println(F("REC full (15/15) — use C to recalibrate and clear"));
       }
     }
     else
     {
       isRecording = false;
       recCount++;
-      laserConfirmBlink();
+      lastRecordingMs = millis();
+      laserConfirmBlink(true);
+      analogWrite(REC_LED_PIN, 0);
       Serial.print(F("REC saved: "));
       Serial.print(recLengths[recActiveIdx]);
       Serial.println(F(" pts"));
+      startPostRecPlayback();
     }
   }
 
@@ -1005,8 +1120,11 @@ void handleManualMode()
       {
         isRecording = false;
         recCount++;
-        laserConfirmBlink();
+        lastRecordingMs = millis();
+        laserConfirmBlink(true);
+        analogWrite(REC_LED_PIN, 0);
         Serial.println(F("REC auto-stopped (buffer full)"));
+        startPostRecPlayback();
       }
     }
   }
@@ -1028,12 +1146,29 @@ void handleManualMode()
   yStepper.setSpeed(sy);
   xStepper.runSpeed();
   yStepper.runSpeed();
+
+  // Idle breathing: slow cosine pulse when joystick at rest and not recording
+  if (!isRecording)
+  {
+    if (!joyMoved)
+    {
+      float phase  = (float)(millis() % IDLE_BREATH_MS) / (float)IDLE_BREATH_MS;
+      float breath = (1.0f - cosf(phase * TWO_PI)) * 0.5f; // 0→1→0
+      int   val    = IDLE_MIN_LASER + (int)((currentLaserPower - IDLE_MIN_LASER) * breath);
+      analogWrite(LASER_PIN, val);
+      laserEnabled = true;
+    }
+    else
+    {
+      analogWrite(LASER_PIN, currentLaserPower);
+      laserEnabled = true;
+    }
+  }
 }
 
-
 // ═══════════════════════════════════════════════════════════════════════════════
-//  DAY/NIGHT RHYTHM  (RS485 DMX + 5-min laser / 1-min sun cycle)
-//  Wiring: Mega pin 18 (Serial1 TX) → RS485 DI | pin 2 → RS485 DE+/RE-
+//  DAY MODE  (RS485 DMX — automatic idle-triggered sun cycle)
+//  Wiring: Mega pin 18 (Serial1 TX) → RS485 DI | pin 4 → RS485 DE+/RE-
 // ═══════════════════════════════════════════════════════════════════════════════
 
 void dmxSend(uint8_t val)
@@ -1147,61 +1282,110 @@ void updateDMXCloud(uint8_t sunLevel)
   dmxSend(cloudDimmer);
 }
 
-void handleDayNightMode()
+// ═══════════════════════════════════════════════════════════════════════════════
+//  DAY MODE  (automatic — triggers after DAY_IDLE_MS of no recording activity)
+//  Sequence: crossfade laser→DMX  →  cloud simulation  →  crossfade DMX→laser
+// ═══════════════════════════════════════════════════════════════════════════════
+
+void startDayMode()
+{
+  xStepper.stop();
+  yStepper.stop();
+  serialInterrupt = true;
+  dayFadeLaserFrom = currentLaserPower;
+  xStepper.setMaxSpeed(DRAW_MAX_SPEED);
+  yStepper.setMaxSpeed(DRAW_MAX_SPEED);
+  xStepper.moveTo(normToStepsX(0.5f));
+  yStepper.moveTo(normToStepsY(0.5f));
+  dayPhase = DAY_FADE_IN;
+  dayPhaseStart = millis();
+  Serial.println(F("DAY MODE: fade in"));
+}
+
+void handleDayMode()
 {
   uint32_t now = millis();
-  uint8_t sunLevel = 255;
+  uint32_t elapsed = now - dayPhaseStart;
 
-  // Phase transitions
-  if (dnPhase == DN_DRAWING && now - dnPhaseStart >= DN_LASER_MS)
+  switch (dayPhase)
   {
-    dnPhase = DN_SUN;
-    dnPhaseStart = now;
-    setLaser(0);
-    xStepper.stop();
-    yStepper.stop();
-    cloudEnterSunny();
-    Serial.println(F("DN: SUN"));
-    return;
-  }
-  if (dnPhase == DN_SUN && now - dnPhaseStart >= DN_SUN_MS)
+  case DAY_FADE_IN:
   {
-    dnPhase = DN_DRAWING;
-    dnPhaseStart = now;
-    dnSubMode = DN_SUBMODES[random(DN_SUBMODE_COUNT)];
-    Serial.println(F("DN: LASER"));
-    return;
-  }
-
-  if (dnPhase == DN_SUN)
-  {
-    updateDMXCloud(sunLevel);
-  }
-  else
-  {
-    // waitForMotors() sends DMX at full brightness during blocking draws;
-    // send once now for the non-blocking path (corners, letters, morse start).
+    xStepper.run();
+    yStepper.run();
+    float t = min(1.0f, (float)elapsed / (float)DAY_FADE_MS);
+    int laserVal = DAY_MIN_LASER + (int)((dayFadeLaserFrom - DAY_MIN_LASER) * (1.0f - t));
+    analogWrite(LASER_PIN, laserVal);
+    laserEnabled = true;
     if (now - lastDmxMs >= 30)
-      dmxSend(sunLevel);
-    switch (dnSubMode)
     {
-    case MODE_SPIRAL:
-      drawSpiralMode();
-      break;
-    case MODE_CIRCLE:
-      drawCircleMode();
-      break;
-    case MODE_CORNERS:
-      drawRandomCorner();
-      break;
-    case MODE_LETTERS:
-      drawRandomLetter();
-      break;
-    default:
-      drawRandomCorner();
-      break;
+      lastDmxMs = now;
+      dmxSend((uint8_t)(255.0f * t));
     }
+    if (elapsed >= DAY_FADE_MS && xStepper.distanceToGo() == 0 && yStepper.distanceToGo() == 0)
+    {
+      analogWrite(LASER_PIN, DAY_MIN_LASER);
+      laserEnabled = true;
+      dmxSend(255);
+      lastDmxMs = now;
+      cloudEnterSunny();
+      dayPhase = DAY_CLOUDS;
+      dayPhaseStart = now;
+      Serial.println(F("DAY MODE: clouds"));
+    }
+    break;
   }
+  case DAY_CLOUDS:
+    analogWrite(LASER_PIN, DAY_MIN_LASER);
+    laserEnabled = true;
+    updateDMXCloud(255);
+    if (elapsed >= DAY_CLOUD_MS)
+    {
+      dayPhase = DAY_FADE_OUT;
+      dayPhaseStart = now;
+      Serial.println(F("DAY MODE: fade out"));
+    }
+    break;
+  case DAY_FADE_OUT:
+  {
+    float t = min(1.0f, (float)elapsed / (float)DAY_FADE_MS);
+    if (now - lastDmxMs >= 30)
+    {
+      lastDmxMs = now;
+      dmxSend((uint8_t)(255.0f * (1.0f - t)));
+    }
+    int laserVal = DAY_MIN_LASER + (int)((currentLaserPower - DAY_MIN_LASER) * t);
+    analogWrite(LASER_PIN, laserVal);
+    laserEnabled = true;
+    if (elapsed >= DAY_FADE_MS)
+    {
+      dmxSend(0);
+      analogWrite(LASER_PIN, 0);
+      laserEnabled = false;
+      dayPhase = DAY_NONE;
+      lastDayModeEndMs = now;
+      Serial.println(F("DAY MODE: end"));
+    }
+    break;
+  }
+  default:
+    break;
+  }
+}
+
+bool checkDayModeTrigger()
+{
+  if (dayPhase != DAY_NONE)
+    return false;
+  if (currentDrawMode == MODE_MANUAL)
+    return false;
+  uint32_t now = millis();
+  if (now - lastDayModeEndMs < DAY_IDLE_MS)
+    return false;
+  if (lastRecordingMs > 0 && now - lastRecordingMs < DAY_QUIET_MS)
+    return false;
+  startDayMode();
+  return true;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1242,7 +1426,16 @@ void handlePlaybackMode()
   if (recCount == 0)
     return;
 
-  uint8_t idx = pickPlaybackIdx();
+  uint8_t idx;
+  if (replayNewestOnce)
+  {
+    idx = recCount - 1;
+    replayNewestOnce = false;
+  }
+  else
+  {
+    idx = pickPlaybackIdx();
+  }
   lastPlayedIdx = idx;
 
   RecPoint *rec = recordings[idx];
@@ -1285,14 +1478,118 @@ void handlePlaybackMode()
 
 void reportStatus()
 {
-  Serial.print(F("POS "));
-  Serial.print(xStepper.currentPosition());
-  Serial.print(' ');
-  Serial.print(yStepper.currentPosition());
-  Serial.print(F(" W "));
+  uint32_t now = millis();
+
+  // ── Mode ──────────────────────────────────────────────────────────────────
+  const __FlashStringHelper *modeName;
+  switch (currentDrawMode)
+  {
+  case MODE_CIRCLE:   modeName = F("CIRCLE");   break;
+  case MODE_MANUAL:   modeName = F("MANUAL");   break;
+  case MODE_PLAYBACK: modeName = F("PLAYBACK"); break;
+  case MODE_SPIRAL:   modeName = F("SPIRAL");   break;
+  case MODE_CORNERS:  modeName = F("CORNERS");  break;
+  case MODE_RAIN:     modeName = F("RAIN");     break;
+  case MODE_LETTERS:  modeName = F("LETTERS");  break;
+  default:            modeName = F("?");        break;
+  }
+  Serial.print(F("MODE     "));
+  Serial.print(modeName);
+  if (inInterMode) Serial.print(F("  [inter-mode]"));
+  if (isRecording) Serial.print(F("  [REC]"));
+  Serial.println();
+
+  // ── Mode running time / time until next cycle ──────────────────────────────
+  uint32_t modeSec = (now - modeStartMs) / 1000UL;
+  Serial.print(F("RUN      "));
+  Serial.print(modeSec);
+  Serial.print(F("s"));
+  if (!inInterMode && currentDrawMode != MODE_MANUAL && currentDrawMode != MODE_SPIRAL)
+  {
+    long secsLeft = ((long)AUTO_CYCLE_MS - (long)(now - modeStartMs)) / 1000L;
+    if (secsLeft < 0) secsLeft = 0;
+    Serial.print(F("  /  next in "));
+    Serial.print(secsLeft);
+    Serial.print(F("s"));
+  }
+  else if (inInterMode)
+  {
+    Serial.print(F("  /  "));
+    Serial.print(interModeLeft);
+    Serial.print(F(" rec(s) left"));
+  }
+  Serial.println();
+
+  // ── Day mode ──────────────────────────────────────────────────────────────
+  if (dayPhase != DAY_NONE)
+  {
+    const __FlashStringHelper *ph;
+    switch (dayPhase)
+    {
+    case DAY_FADE_IN:  ph = F("FADE_IN");  break;
+    case DAY_CLOUDS:   ph = F("CLOUDS");   break;
+    case DAY_FADE_OUT: ph = F("FADE_OUT"); break;
+    default:           ph = F("?");        break;
+    }
+    Serial.print(F("DAY      "));
+    Serial.print(ph);
+    Serial.print(F("  "));
+    Serial.print((now - dayPhaseStart) / 1000UL);
+    Serial.println(F("s elapsed"));
+  }
+  else if (currentDrawMode == MODE_MANUAL)
+  {
+    Serial.println(F("DAY      -- (suppressed in MANUAL)"));
+  }
+  else
+  {
+    long secsUntil = ((long)DAY_IDLE_MS - (long)(now - lastDayModeEndMs)) / 1000L;
+    if (secsUntil <= 0)
+    {
+      if (lastRecordingMs > 0 && now - lastRecordingMs < DAY_QUIET_MS)
+      {
+        long recWait = ((long)DAY_QUIET_MS - (long)(now - lastRecordingMs)) / 1000L;
+        Serial.print(F("DAY      idle — rec quiet "));
+        Serial.print(recWait);
+        Serial.println(F("s"));
+      }
+      else
+      {
+        Serial.println(F("DAY      imminent"));
+      }
+    }
+    else
+    {
+      Serial.print(F("DAY      in "));
+      Serial.print(secsUntil);
+      Serial.println(F("s"));
+    }
+  }
+
+  // ── Recordings ────────────────────────────────────────────────────────────
+  Serial.print(F("REC      "));
+  Serial.print(recCount);
+  Serial.print(F("/"));
+  Serial.print((int)MAX_RECORDINGS);
+  if (isRecording)
+  {
+    Serial.print(F("  [active: "));
+    Serial.print(recLengths[recActiveIdx]);
+    Serial.print(F(" pts]"));
+  }
+  Serial.println();
+
+  // ── Laser + canvas + position ──────────────────────────────────────────────
+  Serial.print(F("LASER    "));
+  Serial.println(currentLaserPower);
+  Serial.print(F("CANVAS   "));
   Serial.print(canvas_width_steps);
-  Serial.print(F(" H "));
-  Serial.println(canvas_height_steps);
+  Serial.print(F("x"));
+  Serial.print(canvas_height_steps);
+  Serial.print(F("  pos "));
+  Serial.print(xStepper.currentPosition());
+  Serial.print(F(","));
+  Serial.println(yStepper.currentPosition());
 }
 
 void parseSerialCommand(char *cmd)
@@ -1392,6 +1689,40 @@ void handleSerialInput()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+//  AUTO-CYCLE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Advance to the next mode in the AUTO_MODES rotation.
+// If recordings exist, insert an inter-mode playback phase first.
+void advanceAutoMode()
+{
+  int idx = 0;
+  for (int i = 0; i < AUTO_MODE_COUNT; i++)
+    if (AUTO_MODES[i] == currentDrawMode)
+    {
+      idx = i;
+      break;
+    }
+  DrawMode next = AUTO_MODES[(idx + 1) % AUTO_MODE_COUNT];
+
+  if (recCount > 0 && INTERMODE_PLAYBACK_MAX > 0 && currentDrawMode != MODE_PLAYBACK)
+  {
+    postInterMode = next;
+    uint8_t n = (uint8_t)random(1, min((int)recCount, (int)INTERMODE_PLAYBACK_MAX) + 1);
+    setDrawMode(MODE_PLAYBACK); // clears inInterMode
+    inInterMode = true;         // set AFTER setDrawMode
+    interModeLeft = n;
+    Serial.print(F("INTER: "));
+    Serial.print(n);
+    Serial.println(F(" rec(s)"));
+  }
+  else
+  {
+    setDrawMode(next);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 //  SETUP / LOOP
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1414,6 +1745,8 @@ void setup()
 
   pinMode(DMX_PIN, OUTPUT);
   digitalWrite(DMX_PIN, HIGH); // RS485 always in transmit mode
+  pinMode(REC_LED_PIN, OUTPUT);
+  analogWrite(REC_LED_PIN, 0);
 
   analogWrite(LASER_PIN, CAL_LASER_POWER);
   laserEnabled = true;
@@ -1437,43 +1770,94 @@ void loop()
   }
   else
   {
-    checkModeButtons(); // pins 50/51 — prev/next mode
     handleSerialInput();
-    if (currentDrawMode != MODE_MANUAL && joystickMoved())
+    checkModeButtons();
+    curBtnEv = checkButtonEvent();
+
+    // Long press: toggle playback ↔ manual
+    if (curBtnEv == BTN_LONG)
     {
-      setDrawMode(MODE_MANUAL);
-      serialInterrupt = true;
+      if (currentDrawMode == MODE_PLAYBACK)
+        setDrawMode(MODE_MANUAL);
+      else if (recCount > 0)
+        setDrawMode(MODE_PLAYBACK);
     }
-    if (!serialInterrupt)
+
+    // Joystick always takes priority — interrupts any mode including day mode
+    if (joystickMoved())
     {
-      switch (currentDrawMode)
+      if (dayPhase != DAY_NONE)
       {
-      case MODE_RAIN:
-        drawRainMode();
-        break;
-      case MODE_SPIRAL:
-        drawSpiralMode();
-        break;
-      case MODE_CIRCLE:
-        drawCircleMode();
-        break;
-      case MODE_CORNERS:
-        drawRandomCorner();
-        break;
-      case MODE_LETTERS:
-        drawRandomLetter();
-        break;
-      case MODE_MANUAL:
-        handleManualMode();
-        break;
-      case MODE_DAYNIGHT:
-        handleDayNightMode();
-        break;
-      case MODE_PLAYBACK:
-        handlePlaybackMode();
-        break;
+        dayPhase = DAY_NONE;
+        xStepper.stop();
+        yStepper.stop();
+        dmxSend(0);
+        analogWrite(LASER_PIN, 0);
+        laserEnabled = false;
+        lastDayModeEndMs = millis();
+      }
+      if (currentDrawMode != MODE_MANUAL)
+      {
+        setDrawMode(MODE_MANUAL);
+        serialInterrupt = true;
       }
     }
+
+    // Day mode runs its own non-blocking state machine
+    if (dayPhase != DAY_NONE)
+    {
+      handleDayMode();
+    }
+    else if (!serialInterrupt)
+    {
+      // Check whether idle timer has elapsed and trigger day mode
+      if (!checkDayModeTrigger())
+      {
+        // Time-based auto-cycle (not spiral — it self-advances on completion; not manual)
+        if (!inInterMode && currentDrawMode != MODE_MANUAL && currentDrawMode != MODE_SPIRAL &&
+            millis() - modeStartMs >= AUTO_CYCLE_MS)
+        {
+          advanceAutoMode();
+        }
+
+        switch (currentDrawMode)
+        {
+        case MODE_RAIN:
+          drawRainMode();
+          break;
+        case MODE_SPIRAL:
+          drawSpiralMode();
+          // spiral returns when it reaches the canvas edge — advance immediately
+          if (!serialInterrupt && currentDrawMode == MODE_SPIRAL)
+            advanceAutoMode();
+          break;
+        case MODE_CIRCLE:
+          drawCircleMode();
+          break;
+        case MODE_CORNERS:
+          drawRandomCorner();
+          break;
+        case MODE_LETTERS:
+          drawRandomLetter();
+          break;
+        case MODE_MANUAL:
+          handleManualMode();
+          break;
+        case MODE_PLAYBACK:
+          handlePlaybackMode();
+          if (!serialInterrupt && inInterMode)
+          {
+            if (--interModeLeft == 0)
+            {
+              inInterMode = false;
+              setDrawMode(postInterMode);
+            }
+          }
+          break;
+        }
+      }
+    }
+
     // Execute any pending serial movement command
     if (pendingSerial != SP_NONE)
     {
