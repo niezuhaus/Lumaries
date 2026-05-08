@@ -11,8 +11,8 @@
 #define BTN_JOYSTICK 42 // joystick click — saves calibration point
 #define BTN_PREV 50     // previous draw mode button
 #define BTN_NEXT 51     // next draw mode button
-#define POTI1 A11       // X-axis jog
-#define POTI2 A12     // Y-axis jog
+#define POTI1 A12       // X-axis jog
+#define POTI2 A11     // Y-axis jog
 #define LASER_PIN 45  // PWM
 #define DMX_PIN 2     // RS485 direction-enable (tied DE+/RE-)
                       // RS485 data uses Serial1 TX (pin 18 on Mega)
@@ -27,6 +27,7 @@ const float DRAW_MAX_SPEED =  25.0;  // steps/sec — detailed drawing (letters,
 const float ACCELERATION   = 1000.0; // steps/s²  — applies to all modes
 const int   POTI_MIN       = 350;    // joystick dead-zone lower bound (0–1023)
 const int   POTI_MAX       = 650;    // joystick dead-zone upper bound (0–1023)
+const int CAL_LASER_POWER = 255;     // laser brightness during calibration (0–255)
 // ╠═══════════════════════════════════════════════════════════════════════════╣
 // ║  RECORDING & PLAYBACK                                                     ║
 const uint8_t  MAX_RECORDINGS    = 15;  // max stored shapes  (RAM: N×POINTS×5 bytes)
@@ -89,12 +90,12 @@ SystemState currentState = CALIBRATE_LEFT;
 // ─── Draw modes (active when READY) ──────────────────────────────────────────
 enum DrawMode
 {
-  MODE_RAIN,     // 1 — rainstorm: falling streaks + lightning flashes
-  MODE_SPIRAL,   // 2 — rectangular spiral expanding from canvas centre
-  MODE_CIRCLE,   // 3 — sine-wave distorted circle
-  MODE_CORNERS,  // 4 — random small 90° corner shapes
+  MODE_CIRCLE,   // 1 — sine-wave distorted circley
   MODE_MANUAL,   // 5 — poti jog with laser on — freehand drawing
   MODE_PLAYBACK, // 6 — replay stored recordings in sequence
+  MODE_SPIRAL,   // 2 — rectangular spiral expanding from canvas centre
+  MODE_CORNERS,  // 4 — random small 90° corner shapes
+  MODE_RAIN,     // 3 — rainstorm: falling streaks + lightning flashes
   MODE_LETTERS,  // 7 — random German characters at random positions
   MODE_DAYNIGHT  // 8 — 5-min laser drawing / 1-min sun DMX cycle
 };
@@ -264,11 +265,14 @@ void setLaser(int power)
 // 3 quick laser blinks to confirm a calibration point was saved
 void laserConfirmBlink()
 {
+  int pwr = (currentState != READY) ? CAL_LASER_POWER : currentLaserPower;
   for (int i = 0; i < 3; i++)
   {
-    setLaser(0);
+    analogWrite(LASER_PIN, 0);
+    laserEnabled = false;
     delay(80);
-    setLaser(currentLaserPower);
+    analogWrite(LASER_PIN, pwr);
+    laserEnabled = true;
     delay(80);
   }
 }
@@ -415,7 +419,8 @@ void restartCalibration()
 {
   xStepper.stop();
   yStepper.stop();
-  setLaser(currentLaserPower);
+  analogWrite(LASER_PIN, CAL_LASER_POWER);
+  laserEnabled = true;
   currentState = CALIBRATE_LEFT;
   setBlinkTarget(1);
   Serial.println(F("CAL: move to LEFT limit, press button"));
@@ -447,24 +452,8 @@ void finalizeCalibration()
     return;
   }
 
-  // Move to origin (top-left corner) and zero the position counters
-  xStepper.setMaxSpeed(DRAW_MAX_SPEED);
-  yStepper.setMaxSpeed(DRAW_MAX_SPEED);
-  xStepper.moveTo(X_left);
-  yStepper.moveTo(Y_top);
-  while (xStepper.distanceToGo() != 0 || yStepper.distanceToGo() != 0)
-  {
-    xStepper.run();
-    yStepper.run();
-  }
-
-  // Re-zero so (0,0) == top-left canvas corner
-  xStepper.setCurrentPosition(0);
-  yStepper.setCurrentPosition(0);
-  X_right -= X_left;
-  X_left = 0;
-  Y_bot -= Y_top;
-  Y_top = 0;
+  // Laser off — first mode handles its own move to starting position
+  setLaser(0);
 
   currentState = READY;
   currentDrawMode = MODE_RAIN;
@@ -600,14 +589,12 @@ void setDrawMode(DrawMode m)
 
 long normToStepsX(float n)
 {
-  long s = (long)(constrain(n, 0.0f, 1.0f) * canvas_width_steps);
-  return constrain(s, X_left, X_left + canvas_width_steps);
+  return X_left + (long)(constrain(n, 0.0f, 1.0f) * canvas_width_steps);
 }
 
 long normToStepsY(float n)
 {
-  long s = (long)(constrain(n, 0.0f, 1.0f) * canvas_height_steps);
-  return constrain(s, Y_top, Y_top + canvas_height_steps);
+  return Y_top + (long)(constrain(n, 0.0f, 1.0f) * canvas_height_steps);
 }
 
 // Returns true when the day/night phase timer has expired and a switch is due.
@@ -707,26 +694,26 @@ void drawRainMode()
   float dy = cos(angle) * RAIN_LINE_LENGTH;
 
   int maxSX = max(1, (int)((1.0f - dx) * 1000));
-  int maxSY = max(1, (int)((1.0f - dy) * 1000));
+  int minSY = (int)(dy * 1000); // start in [dy, 1.0] so end = sy - dy >= 0
   float sx = random(0, maxSX + 1) / 1000.0f;
-  float sy = random(0, maxSY + 1) / 1000.0f;
+  float sy = random(minSY, 1001) / 1000.0f;
 
   moveToCanvas(sx, sy);
   RAIN_CHECK();
 
   setLaser(currentLaserPower);
-  drawSegTo(sx + dx, sy + dy);
+  drawSegTo(sx + dx, sy - dy); // fall toward lower y = physical bottom
   setLaser(0);
   RAIN_CHECK();
 
-  // Lightning: flash the laser at its current position
+  // Lightning: flash the DMX fixture (room lights up, laser stays off)
   if (random(RAIN_FLASH_CHANCE) == 0)
   {
     for (int i = 0; i < RAIN_FLASH_COUNT; i++)
     {
-      setLaser(currentLaserPower);
+      dmxSend(255);
       delay(RAIN_FLASH_ON_MS);
-      setLaser(0);
+      dmxSend(0);
       if (i < RAIN_FLASH_COUNT - 1)
         delay(RAIN_FLASH_OFF_MS);
     }
@@ -1008,9 +995,9 @@ void handleManualMode()
       if (idx < MAX_REC_POINTS)
       {
         recordings[recActiveIdx][idx].x = (uint16_t)constrain(
-          map(xStepper.currentPosition(), 0, canvas_width_steps, 0, 1000), 0, 1000);
+            map(xStepper.currentPosition(), X_left, X_left + canvas_width_steps, 0, 1000), 0, 1000);
         recordings[recActiveIdx][idx].y = (uint16_t)constrain(
-          map(yStepper.currentPosition(), 0, canvas_height_steps, 0, 1000), 0, 1000);
+            map(yStepper.currentPosition(), Y_top, Y_top + canvas_height_steps, 0, 1000), 0, 1000);
         recordings[recActiveIdx][idx].laser = laserEnabled ? 1 : 0;
         recLengths[recActiveIdx]++;
       }
@@ -1029,10 +1016,14 @@ void handleManualMode()
   float sy = potiToSpeed(analogRead(POTI2));
   long xPos = xStepper.currentPosition();
   long yPos = yStepper.currentPosition();
-  if (sx < 0 && xPos <= 0) sx = 0;
-  if (sx > 0 && xPos >= canvas_width_steps) sx = 0;
-  if (sy < 0 && yPos <= 0) sy = 0;
-  if (sy > 0 && yPos >= canvas_height_steps) sy = 0;
+  if (sx < 0 && xPos <= X_left)
+    sx = 0;
+  if (sx > 0 && xPos >= X_left + canvas_width_steps)
+    sx = 0;
+  if (sy < 0 && yPos <= Y_top)
+    sy = 0;
+  if (sy > 0 && yPos >= Y_top + canvas_height_steps)
+    sy = 0;
   xStepper.setSpeed(sx);
   yStepper.setSpeed(sy);
   xStepper.runSpeed();
@@ -1424,7 +1415,8 @@ void setup()
   pinMode(DMX_PIN, OUTPUT);
   digitalWrite(DMX_PIN, HIGH); // RS485 always in transmit mode
 
-  setLaser(currentLaserPower);
+  analogWrite(LASER_PIN, CAL_LASER_POWER);
+  laserEnabled = true;
 
   xStepper.setMaxSpeed(JOG_MAX_SPEED);
   xStepper.setAcceleration(ACCELERATION);
