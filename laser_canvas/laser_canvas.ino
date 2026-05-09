@@ -37,7 +37,7 @@ const uint32_t REC_SAMPLE_MS     = 150; // ms between waypoint samples while rec
 const uint8_t  PLAYBACK_MAX_NOISE = 80; // max position jitter for oldest recording (0–1000 units)
                                         // newest = 0 noise, oldest = PLAYBACK_MAX_NOISE
 const uint8_t REC_LED_BRIGHTNESS = 255; // PWM brightness of recording-indicator LED (0–255)
-const uint32_t AUTO_CYCLE_MS = 60000UL; // ms each auto mode runs before cycling to next
+const uint32_t AUTO_CYCLE_MS = 600000UL; // ms each auto mode runs before cycling to next
 const uint32_t REC_IDLE_STOP_MS  = 5000UL; // ms joystick idle → auto-stop recording + go to playback
 const uint32_t IDLE_BREATH_MS    = 4000UL; // period of one idle-breath pulse in manual mode (ms)
 const uint8_t  IDLE_MIN_LASER    = 50;     // laser floor during idle breathing (0–255)
@@ -124,12 +124,14 @@ int currentLaserPower = 255;
 bool laserEnabled = false;
 
 // ─── Button debounce / long-press ────────────────────────────────────────────
-unsigned long lastPrevTime   = 0;
-unsigned long lastNextTime   = 0;
-const unsigned long DEBOUNCE_MS   = 200;
-const unsigned long LONG_PRESS_MS = 700;  // hold threshold for long-press (ms)
-bool          btnDown        = false;
-unsigned long btnPressedAt   = 0;
+unsigned long lastPrevTime    = 0;
+unsigned long lastNextTime    = 0;
+const unsigned long BTN_DEBOUNCE_MS = 20;  // min hold to count as a press on joystick button
+const unsigned long MODE_BTN_MS    = 200;  // debounce for prev/next mode buttons
+const unsigned long LONG_PRESS_MS  = 700;  // hold threshold for long-press
+bool          btnDown         = false;
+bool          btnLongFired    = false;
+unsigned long btnPressedAt    = 0;
 
 enum BtnEvent { BTN_NONE, BTN_SHORT, BTN_LONG };
 BtnEvent curBtnEv = BTN_NONE;  // set once per loop tick
@@ -386,48 +388,36 @@ void updateLedBlink()
 BtnEvent checkButtonEvent()
 {
   bool pressed = (digitalRead(BTN_JOYSTICK) == LOW);
+  unsigned long now = millis();
+
   if (pressed && !btnDown)
   {
-    btnDown      = true;
-    btnPressedAt = millis();
+    btnDown       = true;
+    btnLongFired  = false;
+    btnPressedAt  = now;
+  }
+  else if (pressed && btnDown && !btnLongFired)
+  {
+    if (now - btnPressedAt >= LONG_PRESS_MS)
+    {
+      btnLongFired = true;
+      return BTN_LONG;   // fires while held — immediate feedback
+    }
   }
   else if (!pressed && btnDown)
   {
-    btnDown = false;
-    unsigned long held = millis() - btnPressedAt;
-    if (held >= LONG_PRESS_MS) return BTN_LONG;
-    if (held >= DEBOUNCE_MS)   return BTN_SHORT;
+    bool wasLong = btnLongFired;
+    btnDown      = false;
+    btnLongFired = false;
+    if (!wasLong && (now - btnPressedAt) >= BTN_DEBOUNCE_MS)
+      return BTN_SHORT;  // fires on release
   }
   return BTN_NONE;
 }
 
 void checkModeButtons()
 {
-  unsigned long now = millis();
-  if (digitalRead(BTN_PREV) == LOW && now - lastPrevTime > DEBOUNCE_MS)
-  {
-    lastPrevTime = now;
-    int idx = 0;
-    for (int i = 0; i < AUTO_MODE_COUNT; i++)
-      if (AUTO_MODES[i] == currentDrawMode)
-      {
-        idx = i;
-        break;
-      }
-    setDrawMode(AUTO_MODES[(idx - 1 + AUTO_MODE_COUNT) % AUTO_MODE_COUNT]);
-  }
-  if (digitalRead(BTN_NEXT) == LOW && now - lastNextTime > DEBOUNCE_MS)
-  {
-    lastNextTime = now;
-    int idx = 0;
-    for (int i = 0; i < AUTO_MODE_COUNT; i++)
-      if (AUTO_MODES[i] == currentDrawMode)
-      {
-        idx = i;
-        break;
-      }
-    setDrawMode(AUTO_MODES[(idx + 1) % AUTO_MODE_COUNT]);
-  }
+  // prev/next buttons deactivated
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
