@@ -32,19 +32,26 @@ const int CAL_LASER_POWER = 255;     // laser brightness during calibration (0�
 // ╠═══════════════════════════════════════════════════════════════════════════╣
 // ║  RECORDING & PLAYBACK                                                     ║
 const uint8_t MAX_RECORDINGS = 20;      // max stored shapes  (RAM: N×POINTS×5 bytes)
-const uint8_t  MAX_REC_POINTS    = 50;  // max waypoints per shape
-const uint32_t REC_SAMPLE_MS     = 150; // ms between waypoint samples while recording
-const uint8_t  PLAYBACK_MAX_NOISE = 80; // max position jitter for oldest recording (0–1000 units)
-                                        // newest = 0 noise, oldest = PLAYBACK_MAX_NOISE
-const uint8_t REC_LED_BRIGHTNESS = 255; // PWM brightness of recording-indicator LED (0–255)
-const uint32_t AUTO_CYCLE_MS = 600000UL; // ms each auto mode runs before cycling to next
+const uint8_t MAX_REC_POINTS = 30;      // max waypoints per shape
+const uint32_t REC_SAMPLE_MS = 100;     // ms between waypoint samples while recording
+const float PLAYBACK_SPEED = 25.0f;     // steps/sec — playback motor speed
+const uint8_t PLAYBACK_MIN_NOISE       =  0;  // noise at age 0 (0–1000 canvas units)
+const uint8_t PLAYBACK_MAX_NOISE       = 60;  // noise at PLAYBACK_AGE_MAX and beyond
+const uint8_t PLAYBACK_RECENCY_WEIGHT  =  1;  // pick bias: 0=flat, 1=linear newest-favoured, higher=stronger
+const uint8_t PLAYBACK_FREE_TELLINGS   =  2;  // first N tellings are always noise-free
+const uint8_t PLAYBACK_AGE_STEP_MIN    =  1;  // min random age added per telling (after free tellings)
+const uint8_t PLAYBACK_AGE_STEP_MAX    =  3;  // max random age added per telling (0 = never ages)
+const uint8_t PLAYBACK_AGE_MAX         = 20;  // age value at which noise reaches PLAYBACK_MAX_NOISE
+const uint8_t LED_MAX = 70;                // PWM brightness of recording-indicator LED (0–255)
+const uint32_t AUTO_CYCLE_MS = 60000UL;    // ms each auto mode runs before cycling to next
 const uint32_t REC_IDLE_STOP_MS  = 5000UL; // ms joystick idle → auto-stop recording + go to playback
+const uint32_t MANUAL_IDLE_MS = 5000UL;    // ms joystick idle in manual (not recording) → transition to playback / auto mode
 const uint32_t IDLE_BREATH_MS    = 4000UL; // period of one idle-breath pulse in manual mode (ms)
 const uint8_t  IDLE_MIN_LASER    = 50;     // laser floor during idle breathing (0–255)
 const uint8_t INTERMODE_PLAYBACK_MAX = 3; // recordings replayed between mode cycles (0 = none)
 // ╠═══════════════════════════════════════════════════════════════════════════╣
 // ║  CORNERS MODE                                                             ║
-const int CORNER_LEN_MIN = 30;  // min arm length (0–1000 canvas units)
+const int CORNER_LEN_MIN = 50;  // min arm length (0–1000 canvas units)
 const int CORNER_LEN_MAX = 200; // max arm length
 // ╠═══════════════════════════════════════════════════════════════════════════╣
 // ║  CIRCLE MODE  (sine-wave distorted circle)                                ║
@@ -135,6 +142,7 @@ unsigned long btnPressedAt    = 0;
 
 enum BtnEvent { BTN_NONE, BTN_SHORT, BTN_LONG };
 BtnEvent curBtnEv = BTN_NONE;  // set once per loop tick
+bool spotActive = false;       // true while long-press spot mode is held
 
 // ─── LED blink state ─────────────────────────────────────────────────────────
 int blinkTarget = 1; // how many blinks per cycle
@@ -163,6 +171,8 @@ char pendingWord[17] = "";  // word queued for drawing in MODE_LETTERS
 struct RecPoint { uint16_t x; uint16_t y; uint8_t laser; };
 RecPoint recordings[MAX_RECORDINGS][MAX_REC_POINTS];
 uint8_t  recLengths[MAX_RECORDINGS];
+uint8_t  recAges[MAX_RECORDINGS];        // age counter, incremented after each telling
+uint8_t  recTimesPlayed[MAX_RECORDINGS]; // number of completed playbacks per recording
 uint8_t  recCount       = 0;
 bool     isRecording    = false;
 uint8_t  recActiveIdx   = 0;
@@ -176,8 +186,7 @@ uint8_t  interModeLeft     = 0;          // recordings remaining in inter-mode p
 DrawMode postInterMode     = MODE_RAIN;  // mode to enter after inter-mode playback
 uint32_t lastJoyMoveMs     = 0;          // millis() of last joystick move (idle-stop detection)
 bool     autoRecordEnabled = false;      // set on entry to manual from another mode; joystick triggers recording once
-bool     manualJoyAtRest   = true;       // edge-detect: was joystick at rest before this movement?
-bool     replayNewestOnce  = false;      // play newest recording once on next playback tick, then go to manual
+bool manualJoyAtRest = true;             // edge-detect: was joystick at rest before this movement?
 
 // ─── Stepper instances ───────────────────────────────────────────────────────
 AccelStepper xStepper(AccelStepper::DRIVER, Y_STEP, Y_DIR);
@@ -287,28 +296,30 @@ int dayFadeLaserFrom = 0;      // laser power at start of fade-in
 //  LASER
 // ═══════════════════════════════════════════════════════════════════════════════
 
+void writeLaser(int val)
+{
+  analogWrite(LASER_PIN, val);
+  if (currentState == READY)
+    analogWrite(REC_LED_PIN, min(val, (int)LED_MAX));
+}
+
 void setLaser(int power)
 {
   laserEnabled = (power > 0);
-  analogWrite(LASER_PIN, laserEnabled ? currentLaserPower : 0);
+  writeLaser(laserEnabled ? currentLaserPower : 0);
 }
 
 // 3 quick blinks to confirm a calibration point or recording start/stop.
-// Pass withRecLed=true to blink the REC LED in sync with the laser.
-void laserConfirmBlink(bool withRecLed = false)
+void laserConfirmBlink()
 {
   int pwr = (currentState != READY) ? CAL_LASER_POWER : currentLaserPower;
   for (int i = 0; i < 3; i++)
   {
-    analogWrite(LASER_PIN, 0);
+    writeLaser(0);
     laserEnabled = false;
-    if (withRecLed)
-      analogWrite(REC_LED_PIN, 0);
     delay(80);
-    analogWrite(LASER_PIN, pwr);
+    writeLaser(pwr);
     laserEnabled = true;
-    if (withRecLed)
-      analogWrite(REC_LED_PIN, REC_LED_BRIGHTNESS);
     delay(80);
   }
 }
@@ -461,7 +472,7 @@ void restartCalibration()
 {
   xStepper.stop();
   yStepper.stop();
-  analogWrite(LASER_PIN, CAL_LASER_POWER);
+  writeLaser(CAL_LASER_POWER);
   laserEnabled = true;
   currentState = CALIBRATE_LEFT;
   setBlinkTarget(1);
@@ -584,7 +595,6 @@ void setDrawMode(DrawMode m)
   {
     isRecording = false;
     recCount++;
-    analogWrite(REC_LED_PIN, 0);
   }
   currentDrawMode = m;
   modeStartMs = millis();
@@ -627,8 +637,8 @@ void setDrawMode(DrawMode m)
     break;
   case MODE_PLAYBACK:
     lastPlayedIdx = 255;
-    xStepper.setMaxSpeed(DRAW_MAX_SPEED);
-    yStepper.setMaxSpeed(DRAW_MAX_SPEED);
+    xStepper.setMaxSpeed(PLAYBACK_SPEED);
+    yStepper.setMaxSpeed(PLAYBACK_SPEED);
     Serial.print(F("MODE: PLAYBACK ("));
     Serial.print(recCount);
     Serial.println(F(" recordings)"));
@@ -1002,23 +1012,15 @@ void drawRandomLetter()
   drawGlyph(ox, oy, scale, (const int8_t *)pgm_read_word(&FONT_TABLE[idx]));
 }
 
-void startPostRecPlayback()
-{
-  replayNewestOnce = true;
-  setDrawMode(MODE_PLAYBACK); // clears inInterMode
-  inInterMode   = true;       // set AFTER setDrawMode
-  interModeLeft = 1;
-  postInterMode = MODE_MANUAL;
-}
-
 void startRecording()
 {
   recActiveIdx = recCount;
-  recLengths[recActiveIdx] = 0;
+  recLengths[recActiveIdx]      = 0;
+  recAges[recActiveIdx]         = 0;
+  recTimesPlayed[recActiveIdx]  = 0;
   isRecording = true;
   lastSampleMs = millis();
-  laserConfirmBlink(true);
-  analogWrite(REC_LED_PIN, REC_LED_BRIGHTNESS);
+  laserConfirmBlink();
   Serial.print(F("REC start: slot "));
   Serial.println(recCount + 1);
 }
@@ -1052,41 +1054,12 @@ void handleManualMode()
     isRecording = false;
     recCount++;
     lastRecordingMs = millis();
-    laserConfirmBlink(true);
-    analogWrite(REC_LED_PIN, 0);
+    laserConfirmBlink();
     Serial.print(F("REC idle-saved: "));
     Serial.print(recLengths[recActiveIdx]);
     Serial.println(F(" pts"));
-    startPostRecPlayback();
+    autoRecordEnabled = false; // re-enabled only when a mode change is interrupted
     return;
-  }
-
-  // Button: short press toggles recording (long press handled in loop → playback toggle)
-  if (curBtnEv == BTN_SHORT)
-  {
-    if (!isRecording)
-    {
-      if (recCount < MAX_RECORDINGS)
-      {
-        startRecording();
-      }
-      else
-      {
-        Serial.println(F("REC full (15/15) — use C to recalibrate and clear"));
-      }
-    }
-    else
-    {
-      isRecording = false;
-      recCount++;
-      lastRecordingMs = millis();
-      laserConfirmBlink(true);
-      analogWrite(REC_LED_PIN, 0);
-      Serial.print(F("REC saved: "));
-      Serial.print(recLengths[recActiveIdx]);
-      Serial.println(F(" pts"));
-      startPostRecPlayback();
-    }
   }
 
   // Sample position + laser state while recording
@@ -1111,12 +1084,30 @@ void handleManualMode()
         isRecording = false;
         recCount++;
         lastRecordingMs = millis();
-        laserConfirmBlink(true);
-        analogWrite(REC_LED_PIN, 0);
+        laserConfirmBlink();
         Serial.println(F("REC auto-stopped (buffer full)"));
-        startPostRecPlayback();
+        autoRecordEnabled = false; // re-enabled only when a mode change is interrupted
       }
     }
+  }
+
+  // Idle timeout: exit manual after MANUAL_IDLE_MS with no joystick movement (not while recording)
+  if (!isRecording && millis() - lastJoyMoveMs >= MANUAL_IDLE_MS)
+  {
+    if (recCount > 0)
+    {
+      setDrawMode(MODE_PLAYBACK);
+    }
+    else
+    {
+      DrawMode pool[AUTO_MODE_COUNT];
+      int cnt = 0;
+      for (int i = 0; i < AUTO_MODE_COUNT; i++)
+        if (AUTO_MODES[i] != MODE_PLAYBACK)
+          pool[cnt++] = AUTO_MODES[i];
+      setDrawMode(pool[random(cnt)]);
+    }
+    return;
   }
 
   // Jog with canvas edge clamping
@@ -1145,12 +1136,12 @@ void handleManualMode()
       float phase  = (float)(millis() % IDLE_BREATH_MS) / (float)IDLE_BREATH_MS;
       float breath = (1.0f - cosf(phase * TWO_PI)) * 0.5f; // 0→1→0
       int   val    = IDLE_MIN_LASER + (int)((currentLaserPower - IDLE_MIN_LASER) * breath);
-      analogWrite(LASER_PIN, val);
+      writeLaser(val);
       laserEnabled = true;
     }
     else
     {
-      analogWrite(LASER_PIN, currentLaserPower);
+      writeLaser(currentLaserPower);
       laserEnabled = true;
     }
   }
@@ -1305,7 +1296,7 @@ void handleDayMode()
     yStepper.run();
     float t = min(1.0f, (float)elapsed / (float)DAY_FADE_MS);
     int laserVal = DAY_MIN_LASER + (int)((dayFadeLaserFrom - DAY_MIN_LASER) * (1.0f - t));
-    analogWrite(LASER_PIN, laserVal);
+    writeLaser(laserVal);
     laserEnabled = true;
     if (now - lastDmxMs >= 30)
     {
@@ -1314,7 +1305,7 @@ void handleDayMode()
     }
     if (elapsed >= DAY_FADE_MS && xStepper.distanceToGo() == 0 && yStepper.distanceToGo() == 0)
     {
-      analogWrite(LASER_PIN, DAY_MIN_LASER);
+      writeLaser(DAY_MIN_LASER);
       laserEnabled = true;
       dmxSend(255);
       lastDmxMs = now;
@@ -1326,7 +1317,7 @@ void handleDayMode()
     break;
   }
   case DAY_CLOUDS:
-    analogWrite(LASER_PIN, DAY_MIN_LASER);
+    writeLaser(DAY_MIN_LASER);
     laserEnabled = true;
     updateDMXCloud(255);
     if (elapsed >= DAY_CLOUD_MS)
@@ -1345,12 +1336,12 @@ void handleDayMode()
       dmxSend((uint8_t)(255.0f * (1.0f - t)));
     }
     int laserVal = DAY_MIN_LASER + (int)((currentLaserPower - DAY_MIN_LASER) * t);
-    analogWrite(LASER_PIN, laserVal);
+    writeLaser(laserVal);
     laserEnabled = true;
     if (elapsed >= DAY_FADE_MS)
     {
       dmxSend(0);
-      analogWrite(LASER_PIN, 0);
+      writeLaser(0);
       laserEnabled = false;
       dayPhase = DAY_NONE;
       lastDayModeEndMs = now;
@@ -1399,13 +1390,13 @@ static uint8_t pickPlaybackIdx()
   uint16_t total = 0;
   for (uint8_t i = 0; i < recCount; i++)
     if (recCount == 1 || i != lastPlayedIdx)
-      total += (uint16_t)(i + 1);
+      total += (uint16_t)(1 + (uint16_t)i * PLAYBACK_RECENCY_WEIGHT);
 
   uint16_t roll = (uint16_t)random(total);
   uint16_t acc  = 0;
   for (uint8_t i = 0; i < recCount; i++) {
     if (recCount > 1 && i == lastPlayedIdx) continue;
-    acc += (uint16_t)(i + 1);
+    acc += (uint16_t)(1 + (uint16_t)i * PLAYBACK_RECENCY_WEIGHT);
     if (roll < acc) return i;
   }
   return recCount - 1;
@@ -1416,31 +1407,25 @@ void handlePlaybackMode()
   if (recCount == 0)
     return;
 
-  uint8_t idx;
-  if (replayNewestOnce)
-  {
-    idx = recCount - 1;
-    replayNewestOnce = false;
-  }
-  else
-  {
-    idx = pickPlaybackIdx();
-  }
+  uint8_t idx = pickPlaybackIdx();
   lastPlayedIdx = idx;
 
   RecPoint *rec = recordings[idx];
   uint8_t   len = recLengths[idx];
 
-  // Age 0.0 = newest (recCount-1), 1.0 = oldest (0)
-  float age = (recCount > 1) ? (float)(recCount - 1 - idx) / (float)(recCount - 1) : 0.0f;
-  // Max noise in 0-1000 units: ±80 at full age
-  int16_t noiseScale = (int16_t)(age * PLAYBACK_MAX_NOISE);
+  bool    isFree    = (recTimesPlayed[idx] < PLAYBACK_FREE_TELLINGS);
+  float   ageF      = isFree ? 0.0f
+                             : constrain((float)recAges[idx] / (float)PLAYBACK_AGE_MAX, 0.0f, 1.0f);
+  int16_t noiseScale = (int16_t)(PLAYBACK_MIN_NOISE + ageF * (PLAYBACK_MAX_NOISE - PLAYBACK_MIN_NOISE));
 
   Serial.print(F("PLAY rec "));
   Serial.print(idx);
   Serial.print(F(" age="));
-  Serial.print((int)(age * 100));
-  Serial.println(F("%"));
+  Serial.print(recAges[idx]);
+  Serial.print(F(" plays="));
+  Serial.print(recTimesPlayed[idx]);
+  Serial.print(F(" noise="));
+  Serial.println(noiseScale);
 
   if (len > 0)
   {
@@ -1458,6 +1443,11 @@ void handlePlaybackMode()
   }
 
   setLaser(0);
+
+  // Telling complete — update play count and maybe age
+  recTimesPlayed[idx]++;
+  if (recTimesPlayed[idx] > PLAYBACK_FREE_TELLINGS && PLAYBACK_AGE_STEP_MAX > 0)
+    recAges[idx] = (uint8_t)min(255, (int)recAges[idx] + (int)random(PLAYBACK_AGE_STEP_MIN, PLAYBACK_AGE_STEP_MAX + 1));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1608,7 +1598,7 @@ void parseSerialCommand(char *cmd)
   else if (cmd[0] == 'L' && sscanf(cmd + 1, "%d", &p) == 1)
   {
     currentLaserPower = constrain(p, 0, 255);
-    analogWrite(LASER_PIN, laserEnabled ? currentLaserPower : 0);
+    writeLaser(laserEnabled ? currentLaserPower : 0);
     Serial.print(F("LASER "));
     Serial.println(currentLaserPower);
   }
@@ -1736,9 +1726,7 @@ void setup()
   pinMode(DMX_PIN, OUTPUT);
   digitalWrite(DMX_PIN, HIGH); // RS485 always in transmit mode
   pinMode(REC_LED_PIN, OUTPUT);
-  analogWrite(REC_LED_PIN, 0);
-
-  analogWrite(LASER_PIN, CAL_LASER_POWER);
+  writeLaser(CAL_LASER_POWER);
   laserEnabled = true;
 
   xStepper.setMaxSpeed(JOG_MAX_SPEED);
@@ -1764,17 +1752,23 @@ void loop()
     checkModeButtons();
     curBtnEv = checkButtonEvent();
 
-    // Long press: toggle playback ↔ manual
-    if (curBtnEv == BTN_LONG)
+    // Long press: enter spot mode (laser on, brightness from Y joystick, motors stopped)
+    if (curBtnEv == BTN_LONG && !spotActive)
     {
-      if (currentDrawMode == MODE_PLAYBACK)
-        setDrawMode(MODE_MANUAL);
-      else if (recCount > 0)
-        setDrawMode(MODE_PLAYBACK);
+      spotActive = true;
+      xStepper.stop();
+      yStepper.stop();
+      serialInterrupt = true;
+    }
+    // Spot mode end: button released after long press
+    if (spotActive && !(btnDown && btnLongFired))
+    {
+      spotActive = false;
+      setLaser(0);
     }
 
     // Joystick always takes priority — interrupts any mode including day mode
-    if (joystickMoved())
+    if (!spotActive && joystickMoved())
     {
       if (dayPhase != DAY_NONE)
       {
@@ -1782,7 +1776,7 @@ void loop()
         xStepper.stop();
         yStepper.stop();
         dmxSend(0);
-        analogWrite(LASER_PIN, 0);
+        writeLaser(0);
         laserEnabled = false;
         lastDayModeEndMs = millis();
       }
@@ -1793,8 +1787,17 @@ void loop()
       }
     }
 
+    // Spot mode: laser brightness mapped from Y joystick, motors already stopped
+    if (spotActive)
+    {
+      float spd = potiToSpeed(analogRead(POTI2));
+      if (spd < 0)
+        spd = -spd;
+      writeLaser((int)(spd / JOG_MAX_SPEED * 255.0f));
+      laserEnabled = true;
+    }
     // Day mode runs its own non-blocking state machine
-    if (dayPhase != DAY_NONE)
+    else if (dayPhase != DAY_NONE)
     {
       handleDayMode();
     }
