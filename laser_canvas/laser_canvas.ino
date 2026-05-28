@@ -24,7 +24,7 @@
 // ╠═══════════════════════════════════════════════════════════════════════════╣
 // ║  MOTORS                                                                   ║
 const float JOG_MAX_SPEED  = 100.0;  // steps/sec — calibration jogging
-const float DRAW_MAX_SPEED =  25.0;  // steps/sec — detailed drawing (letters, corners)
+const float DRAW_MAX_SPEED =  12.0;  // steps/sec — detailed drawing (letters, corners)
 const float ACCELERATION   = 1000.0; // steps/s²  — applies to all modes
 const int   POTI_MIN       = 350;    // joystick dead-zone lower bound (0–1023)
 const int   POTI_MAX       = 650;    // joystick dead-zone upper bound (0–1023)
@@ -43,7 +43,7 @@ const uint8_t PLAYBACK_AGE_STEP_MIN    =  1;  // min random age added per tellin
 const uint8_t PLAYBACK_AGE_STEP_MAX    =  3;  // max random age added per telling (0 = never ages)
 const uint8_t PLAYBACK_AGE_MAX         = 20;  // age value at which noise reaches PLAYBACK_MAX_NOISE
 const uint8_t LED_MAX = 70;                // PWM brightness of recording-indicator LED (0–255)
-const uint32_t AUTO_CYCLE_MS = 60000UL;    // ms each auto mode runs before cycling to next
+const uint32_t AUTO_CYCLE_MS = 120000UL;    // ms each auto mode runs before cycling to next
 const uint32_t REC_IDLE_STOP_MS  = 5000UL; // ms joystick idle → auto-stop recording + go to playback
 const uint32_t MANUAL_IDLE_MS = 5000UL;    // ms joystick idle in manual (not recording) → transition to playback / auto mode
 const uint32_t IDLE_BREATH_MS    = 4000UL; // period of one idle-breath pulse in manual mode (ms)
@@ -79,6 +79,11 @@ const float SPIRAL_SPEED_MULT = 3.5f;   // speed multiplier at the canvas edge v
 // ║  LETTERS MODE                                                             ║
 const int   LETTER_SCALE_MIN =  6;  // min glyph scale (÷1000 → canvas fraction)
 const int   LETTER_SCALE_MAX = 20;  // max glyph scale
+const float LETTER_GAP = 0.01f;        // extra spacing between characters (font units)
+// ╠═══════════════════════════════════════════════════════════════════════════╣
+// ║  PLACE MODE  (dim dot positioning + serial text placement)               ║
+const uint8_t PLACE_LASER_POWER = 180; // nearly invisible positioning dot (0–255)
+const int PLACE_FONT_SIZE_DEF = 12;    // default font size (÷1000 = scale)
 // ╠═══════════════════════════════════════════════════════════════════════════╣
 // ║  DAY MODE  (automatic sun cycle — triggers when idle long enough)         ║
 const uint32_t DAY_IDLE_MS = 10UL * 60UL * 1000UL; // idle time before day mode triggers (10 min)
@@ -113,10 +118,11 @@ enum DrawMode
   MODE_SPIRAL,   // rectangular spiral from canvas centre
   MODE_CORNERS,  // random 90° corner shapes
   MODE_RAIN,     // rainstorm: falling streaks + lightning
-  MODE_LETTERS   // random German characters
+  MODE_LETTERS,  // random German characters
+  MODE_PLACE     // dim dot positioning + serial text placement
 };
 DrawMode currentDrawMode = MODE_RAIN;
-const int DRAW_MODE_COUNT = 7;
+const int DRAW_MODE_COUNT = 8;
 
 // ─── Canvas geometry (filled after calibration) ───────────────────────────────
 long X_left = 0;
@@ -164,7 +170,8 @@ enum SerialPending { SP_NONE, SP_MOVE, SP_DRAW, SP_HOME };
 SerialPending pendingSerial = SP_NONE;
 float pendingSerialX = 0.0f, pendingSerialY = 0.0f;
 bool serialInterrupt = false;
-char pendingWord[17] = "";  // word queued for drawing in MODE_LETTERS
+char pendingWord[17] = "";               // word queued for drawing in MODE_LETTERS / MODE_PLACE
+int placeFontSize = PLACE_FONT_SIZE_DEF; // current font size for MODE_PLACE (÷1000 = scale)
 
 // ─── Shape recordings ─────────────────────────────────────────────────────────
 
@@ -187,6 +194,7 @@ DrawMode postInterMode     = MODE_RAIN;  // mode to enter after inter-mode playb
 uint32_t lastJoyMoveMs     = 0;          // millis() of last joystick move (idle-stop detection)
 bool     autoRecordEnabled = false;      // set on entry to manual from another mode; joystick triggers recording once
 bool manualJoyAtRest = true;             // edge-detect: was joystick at rest before this movement?
+bool waitingForFirstTouch = false;       // after calibration: laser parked at center, waiting for first joystick move
 
 // ─── Stepper instances ───────────────────────────────────────────────────────
 AccelStepper xStepper(AccelStepper::DRIVER, Y_STEP, Y_DIR);
@@ -198,7 +206,7 @@ AccelStepper yStepper(AccelStepper::DRIVER, X_STEP, X_DIR);
 //  Each char encodes a value: v = char - 'R'  (so 'R'=0, 'A'=-17, '['=9, etc.)
 //  Pen-up = two-char marker " R" (0x20 0x52); string ends at null terminator.
 //  Cell: x spans [left_bearing … right_bearing], y ≈ [-12 … +10]; y negative = up.
-//  Canvas mapping: cx = ox+(gx-lb)*scale,  cy = oy+(gy+NS_MAX_Y)*scale
+//  Canvas mapping: cx = ox+(gx-lb)*scale,  cy = oy+(NS_MAX_Y-gy)*scale  (canvas y increases upward)
 // ═══════════════════════════════════════════════════════════════════════════════
 const char NS_A[] PROGMEM = "I[MUWU RK[RFY[";
 const char NS_B[] PROGMEM = "G\\SPVQWRXTXWWYVZT[L[LFSFUGVHWJWLVNUOSPLP";
@@ -307,11 +315,40 @@ int dayFadeLaserFrom = 0;      // laser power at start of fade-in
 //  LASER
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// Gamma 2.2 lookup: linear input → perceptually-linear PWM output.
+const uint8_t GAMMA_TABLE[256] PROGMEM = {
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2,
+    3, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6,
+    6, 7, 7, 7, 8, 8, 8, 9, 9, 9, 10, 10, 11, 11, 11, 12,
+    12, 13, 13, 13, 14, 14, 15, 15, 16, 16, 17, 17, 18, 18, 19, 19,
+    20, 20, 21, 22, 22, 23, 23, 24, 25, 25, 26, 26, 27, 28, 28, 29,
+    30, 30, 31, 32, 33, 33, 34, 35, 35, 36, 37, 38, 39, 39, 40, 41,
+    42, 43, 43, 44, 45, 46, 47, 48, 49, 49, 50, 51, 52, 53, 54, 55,
+    56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71,
+    73, 74, 75, 76, 77, 78, 79, 81, 82, 83, 84, 85, 87, 88, 89, 90,
+    91, 93, 94, 95, 97, 98, 99, 100, 102, 103, 105, 106, 107, 109, 110, 111,
+    113, 114, 116, 117, 119, 120, 121, 123, 124, 126, 127, 129, 130, 132, 133, 135,
+    137, 138, 140, 141, 143, 145, 146, 148, 149, 151, 153, 154, 156, 158, 159, 161,
+    163, 165, 166, 168, 170, 172, 173, 175, 177, 179, 181, 182, 184, 186, 188, 190,
+    192, 194, 196, 197, 199, 201, 203, 205, 207, 209, 211, 213, 215, 217, 219, 221,
+    223, 225, 227, 229, 231, 234, 236, 238, 240, 242, 244, 246, 248, 251, 253, 255};
+
+inline uint8_t applyGamma(int val)
+{
+  if (val <= 0)
+    return 0;
+  if (val >= 255)
+    return 255;
+  return pgm_read_byte(&GAMMA_TABLE[val]);
+}
+
 void writeLaser(int val)
 {
-  analogWrite(LASER_PIN, val);
+  uint8_t pwm = applyGamma(val);
+  analogWrite(LASER_PIN, pwm);
   if (currentState == READY)
-    analogWrite(REC_LED_PIN, min(val, (int)LED_MAX));
+    analogWrite(REC_LED_PIN, min((int)pwm, (int)LED_MAX));
 }
 
 void setLaser(int power)
@@ -524,15 +561,17 @@ void finalizeCalibration()
   Serial.print(canvas_width_steps);
   Serial.print(F(" H="));
   Serial.println(canvas_height_steps);
-  // Pick a random starting auto mode (skip PLAYBACK when no recordings yet)
-  {
-    DrawMode pool[AUTO_MODE_COUNT];
-    int cnt = 0;
-    for (int i = 0; i < AUTO_MODE_COUNT; i++)
-      if (AUTO_MODES[i] != MODE_PLAYBACK || recCount > 0)
-        pool[cnt++] = AUTO_MODES[i];
-    setDrawMode(pool[random(cnt)]);
-  }
+
+  // Park laser at canvas center and wait for first joystick touch
+  xStepper.setMaxSpeed(JOG_MAX_SPEED);
+  yStepper.setMaxSpeed(JOG_MAX_SPEED);
+  xStepper.moveTo(normToStepsX(0.5f));
+  yStepper.moveTo(normToStepsY(0.5f));
+  currentLaserPower = CAL_LASER_POWER;
+  writeLaser(currentLaserPower);
+  laserEnabled = true;
+  waitingForFirstTouch = true;
+  Serial.println(F("WAIT: move joystick to begin"));
 }
 
 void saveCalibrationPoint()
@@ -654,6 +693,15 @@ void setDrawMode(DrawMode m)
     Serial.print(recCount);
     Serial.println(F(" recordings)"));
     break;
+  case MODE_PLACE:
+    xStepper.setMaxSpeed(JOG_MAX_SPEED);
+    yStepper.setMaxSpeed(JOG_MAX_SPEED);
+    writeLaser(PLACE_LASER_POWER);
+    laserEnabled = true;
+    Serial.print(F("MODE: PLACE (size="));
+    Serial.print(placeFontSize);
+    Serial.println(F(")"));
+    break;
   }
 }
 
@@ -678,11 +726,6 @@ void waitForMotors()
     xStepper.run();
     yStepper.run();
     handleSerialInput();
-    if (currentDrawMode != MODE_MANUAL && joystickMoved())
-    {
-      setDrawMode(MODE_MANUAL);
-      serialInterrupt = true;
-    }
     if (serialInterrupt)
     {
       xStepper.stop();
@@ -942,7 +985,7 @@ void drawGlyphNS(float ox, float oy, float scale, const char *data)
     int8_t gx = (int8_t)(ca - 'R');
     int8_t gy = (int8_t)(cb - 'R');
     float cx = ox + (gx - lb) * scale;
-    float cy = oy + (gy + NS_MAX_Y) * scale; // y=-12→top, y=+10→bottom
+    float cy = oy + (NS_MAX_Y - gy) * scale; // canvas y increases upward; gy=-12=cap→large cy, gy=+9=base→small cy
 
     if (needsMove)
     {
@@ -956,6 +999,14 @@ void drawGlyphNS(float ox, float oy, float scale, const char *data)
     }
   }
   setLaser(0);
+}
+
+// Returns advance width (right_bearing - left_bearing) for a newstroke glyph.
+static int8_t glyphAdvance(const char *data)
+{
+  int8_t lb = (int8_t)((char)pgm_read_byte(&data[0]) - 'R');
+  int8_t rb = (int8_t)((char)pgm_read_byte(&data[1]) - 'R');
+  return rb - lb;
 }
 
 // Umlaut fallback: old int8_t format, 8×12 cell.
@@ -985,18 +1036,10 @@ void drawSerialWord(const char *word)
 {
   int len = strlen(word);
   if (len == 0) return;
-  // Scale so the whole word fits within 90% of canvas width, capped at single-letter max
-  float step  = NS_CELL_W + 2.0f;           // 2-unit gap between chars
-  float scale = min(0.9f / (len * step), 0.025f);
-  float charH = NS_CELL_H * scale;
-  float totalW = len * step * scale - 2.0f * scale; // subtract trailing gap
-  float maxOy = max(0.0f, 1.0f - charH);
-  float ox = (1.0f - totalW) / 2.0f;        // horizontally centred
-  float oy = random(0, max(1, (int)(maxOy * 1000))) / 1000.0f;
+  const float GAP = LETTER_GAP;
 
-  Serial.print(F("WORD: "));
-  Serial.println(word);
-
+  // Pre-compute total advance for scaling/centering
+  float totalAdv = 0;
   for (int i = 0; i < len; i++)
   {
     char c = word[i];
@@ -1004,11 +1047,34 @@ void drawSerialWord(const char *word)
     {
       int nsIdx = (c >= 'A' && c <= 'Z') ? c - 'A' : c - 'a';
       const char *g = (const char *)pgm_read_word(&NS_TABLE[nsIdx]);
-      drawGlyphNS(ox + i * step * scale, oy, scale, g);
+      totalAdv += glyphAdvance(g);
+    }
+    else totalAdv += FONT_CELL_W;
+    if (i < len - 1) totalAdv += GAP;
+  }
+
+  float scale = min(0.9f / totalAdv, 0.025f);
+  float charH = NS_CELL_H * scale;
+  float maxOy = max(0.0f, 1.0f - charH);
+  float ox = (1.0f - totalAdv * scale) / 2.0f; // horizontally centred
+  float oy = random(0, max(1, (int)(maxOy * 1000))) / 1000.0f;
+
+  Serial.print(F("WORD: "));
+  Serial.println(word);
+
+  float curX = 0;
+  for (int i = 0; i < len; i++)
+  {
+    char c = word[i];
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))
+    {
+      int nsIdx = (c >= 'A' && c <= 'Z') ? c - 'A' : c - 'a';
+      const char *g = (const char *)pgm_read_word(&NS_TABLE[nsIdx]);
+      drawGlyphNS(ox + curX * scale, oy, scale, g);
+      curX += glyphAdvance(g) + GAP;
     }
     else
     {
-      // Umlaut fallback
       int ui = -1;
       if (c == (char)0xC4 || c == (char)0xE4) ui = 0;
       else if (c == (char)0xD6 || c == (char)0xF6) ui = 1;
@@ -1017,11 +1083,89 @@ void drawSerialWord(const char *word)
       if (ui >= 0)
       {
         const int8_t *g = (const int8_t *)pgm_read_word(&UMLAUT_TABLE[ui]);
-        drawGlyphOld(ox + i * step * scale, oy, scale, g);
+        drawGlyphOld(ox + curX * scale, oy, scale, g);
       }
+      curX += FONT_CELL_W + GAP;
     }
   }
   setLaser(0);
+}
+
+// Draw a word at an exact canvas position (normalized 0–1) with an explicit scale.
+// ox/oy is the top-left origin; text extends right and down from there.
+void drawWordAt(const char *word, float ox, float oy, float scale)
+{
+  int len = strlen(word);
+  if (len == 0) return;
+  const float GAP = LETTER_GAP;
+
+  Serial.print(F("PLACE: "));
+  Serial.print(word);
+  Serial.print(F(" @("));
+  Serial.print((int)(ox * 1000));
+  Serial.print(F(","));
+  Serial.print((int)(oy * 1000));
+  Serial.print(F(") s="));
+  Serial.println(scale);
+
+  xStepper.setMaxSpeed(DRAW_MAX_SPEED);
+  yStepper.setMaxSpeed(DRAW_MAX_SPEED);
+
+  float curX = 0;
+  for (int i = 0; i < len; i++)
+  {
+    char c = word[i];
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))
+    {
+      int nsIdx = (c >= 'A' && c <= 'Z') ? c - 'A' : c - 'a';
+      const char *g = (const char *)pgm_read_word(&NS_TABLE[nsIdx]);
+      drawGlyphNS(ox + curX * scale, oy, scale, g);
+      curX += glyphAdvance(g) + GAP;
+    }
+    else
+    {
+      int ui = -1;
+      if (c == (char)0xC4 || c == (char)0xE4) ui = 0;
+      else if (c == (char)0xD6 || c == (char)0xF6) ui = 1;
+      else if (c == (char)0xDC || c == (char)0xFC) ui = 2;
+      else if (c == (char)0xDF) ui = 3;
+      if (ui >= 0)
+      {
+        const int8_t *g = (const int8_t *)pgm_read_word(&UMLAUT_TABLE[ui]);
+        drawGlyphOld(ox + curX * scale, oy, scale, g);
+      }
+      curX += FONT_CELL_W + GAP;
+    }
+  }
+  setLaser(0);
+  xStepper.setMaxSpeed(JOG_MAX_SPEED);
+  yStepper.setMaxSpeed(JOG_MAX_SPEED);
+}
+
+// Dim-dot positioning + serial text placement.
+void handlePlaceMode()
+{
+  // Keep positioning dot on
+  writeLaser(PLACE_LASER_POWER);
+  laserEnabled = true;
+
+  // Velocity jog — same edge clamping as manual mode
+  float sx = potiToSpeed(analogRead(POTI1));
+  float sy = potiToSpeed(analogRead(POTI2));
+  long xPos = xStepper.currentPosition();
+  long yPos = yStepper.currentPosition();
+  if (sx < 0 && xPos <= X_left)
+    sx = 0;
+  if (sx > 0 && xPos >= X_left + canvas_width_steps)
+    sx = 0;
+  if (sy < 0 && yPos <= Y_top)
+    sy = 0;
+  if (sy > 0 && yPos >= Y_top + canvas_height_steps)
+    sy = 0;
+  xStepper.setSpeed(sx);
+  yStepper.setSpeed(sy);
+  xStepper.runSpeed();
+  yStepper.runSpeed();
 }
 
 // Draw one random letter (A-Z + Ä Ö Ü ß) at a random position and size.
@@ -1033,7 +1177,8 @@ void drawRandomLetter()
   if (idx < 26)
   {
     scale = random(LETTER_SCALE_MIN, LETTER_SCALE_MAX + 1) / 1000.0f;
-    charW = NS_CELL_W * scale;
+    const char *g = (const char *)pgm_read_word(&NS_TABLE[idx]);
+    charW = glyphAdvance(g) * scale;
     charH = NS_CELL_H * scale;
   }
   else
@@ -1146,25 +1291,6 @@ void handleManualMode()
         autoRecordEnabled = false; // re-enabled only when a mode change is interrupted
       }
     }
-  }
-
-  // Idle timeout: exit manual after MANUAL_IDLE_MS with no joystick movement (not while recording)
-  if (!isRecording && millis() - lastJoyMoveMs >= MANUAL_IDLE_MS)
-  {
-    if (recCount > 0)
-    {
-      setDrawMode(MODE_PLAYBACK);
-    }
-    else
-    {
-      DrawMode pool[AUTO_MODE_COUNT];
-      int cnt = 0;
-      for (int i = 0; i < AUTO_MODE_COUNT; i++)
-        if (AUTO_MODES[i] != MODE_PLAYBACK)
-          pool[cnt++] = AUTO_MODES[i];
-      setDrawMode(pool[random(cnt)]);
-    }
-    return;
   }
 
   // Jog with canvas edge clamping
@@ -1528,6 +1654,9 @@ void reportStatus()
   case MODE_CORNERS:  modeName = F("CORNERS");  break;
   case MODE_RAIN:     modeName = F("RAIN");     break;
   case MODE_LETTERS:  modeName = F("LETTERS");  break;
+  case MODE_PLACE:
+    modeName = F("PLACE");
+    break;
   default:            modeName = F("?");        break;
   }
   Serial.print(F("MODE     "));
@@ -1689,6 +1818,30 @@ void parseSerialCommand(char *cmd)
     pendingWord[16] = '\0';
     serialInterrupt = true;
   }
+  else if (currentDrawMode == MODE_PLACE)
+  {
+    // Numeric input → font size; anything else → draw word at current position
+    bool isNum = (strlen(cmd) > 0);
+    for (int i = 0; cmd[i] != '\0'; i++)
+      if (cmd[i] < '0' || cmd[i] > '9')
+      {
+        isNum = false;
+        break;
+      }
+
+    if (isNum)
+    {
+      placeFontSize = constrain(atoi(cmd), 1, 200);
+      Serial.print(F("PLACE SIZE: "));
+      Serial.println(placeFontSize);
+    }
+    else if (strlen(cmd) > 0)
+    {
+      strncpy(pendingWord, cmd, 16);
+      pendingWord[16] = '\0';
+      serialInterrupt = true;
+    }
+  }
   else
   {
     Serial.println(F("ERR"));
@@ -1824,23 +1977,26 @@ void loop()
       setLaser(0);
     }
 
-    // Joystick always takes priority — interrupts any mode including day mode
-    if (!spotActive && joystickMoved())
+    // First-touch gate: laser parked at center after calibration, waiting for joystick
+    if (waitingForFirstTouch)
     {
-      if (dayPhase != DAY_NONE)
+      xStepper.run();
+      yStepper.run();
+      if (serialInterrupt)
       {
-        dayPhase = DAY_NONE;
-        xStepper.stop();
-        yStepper.stop();
-        dmxSend(0);
+        // A serial command already set a mode — exit wait and let it run
+        waitingForFirstTouch = false;
         writeLaser(0);
         laserEnabled = false;
-        lastDayModeEndMs = millis();
       }
-      if (currentDrawMode != MODE_MANUAL)
+      else if (joystickMoved())
       {
+        waitingForFirstTouch = false;
         setDrawMode(MODE_MANUAL);
-        serialInterrupt = true;
+      }
+      else
+      {
+        return;
       }
     }
 
@@ -1856,20 +2012,27 @@ void loop()
     // Day mode runs its own non-blocking state machine
     else if (dayPhase != DAY_NONE)
     {
-      handleDayMode();
+      // Joystick cancels day mode
+      if (joystickMoved())
+      {
+        dayPhase = DAY_NONE;
+        xStepper.stop();
+        yStepper.stop();
+        dmxSend(0);
+        writeLaser(0);
+        laserEnabled = false;
+        lastDayModeEndMs = millis();
+      }
+      else
+      {
+        handleDayMode();
+      }
     }
     else if (!serialInterrupt)
     {
       // Check whether idle timer has elapsed and trigger day mode
       if (!checkDayModeTrigger())
       {
-        // Time-based auto-cycle (not spiral — it self-advances on completion; not manual)
-        if (!inInterMode && currentDrawMode != MODE_MANUAL && currentDrawMode != MODE_SPIRAL &&
-            millis() - modeStartMs >= AUTO_CYCLE_MS)
-        {
-          advanceAutoMode();
-        }
-
         switch (currentDrawMode)
         {
         case MODE_RAIN:
@@ -1904,6 +2067,9 @@ void loop()
             }
           }
           break;
+        case MODE_PLACE:
+          handlePlaceMode();
+          break;
         }
       }
     }
@@ -1926,7 +2092,19 @@ void loop()
     else if (pendingWord[0] != '\0')
     {
       serialInterrupt = false;
-      drawSerialWord(pendingWord);
+      if (currentDrawMode == MODE_PLACE)
+      {
+        float nx = (float)(xStepper.currentPosition() - X_left) / (float)canvas_width_steps;
+        float ny = (float)(yStepper.currentPosition() - Y_top) / (float)canvas_height_steps;
+        drawWordAt(pendingWord, nx, ny, placeFontSize / 1000.0f);
+        // Restore dim positioning dot after drawing
+        writeLaser(PLACE_LASER_POWER);
+        laserEnabled = true;
+      }
+      else
+      {
+        drawSerialWord(pendingWord);
+      }
       pendingWord[0] = '\0';
       Serial.println(F("OK"));
     }
