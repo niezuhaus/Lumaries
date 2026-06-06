@@ -28,7 +28,9 @@ const float DRAW_MAX_SPEED =  12.0;  // steps/sec — detailed drawing (letters,
 const float ACCELERATION   = 1000.0; // steps/s²  — applies to all modes
 const int   POTI_MIN       = 350;    // joystick dead-zone lower bound (0–1023)
 const int   POTI_MAX       = 650;    // joystick dead-zone upper bound (0–1023)
-const int CAL_LASER_POWER = 255;     // laser brightness during calibration (0–255)
+const int  CAL_LASER_POWER  = 255;   // laser brightness during calibration (0–255)
+const long SAVED_CANVAS_W   =  90;   // last known canvas width  in steps  (serial: K)
+const long SAVED_CANVAS_H   = 152;   // last known canvas height in steps  (serial: K)
 // ╠═══════════════════════════════════════════════════════════════════════════╣
 // ║  RECORDING & PLAYBACK                                                     ║
 const uint8_t MAX_RECORDINGS = 20;      // max stored shapes  (RAM: N×POINTS×5 bytes)
@@ -79,7 +81,7 @@ const float SPIRAL_SPEED_MULT = 3.5f;   // speed multiplier at the canvas edge v
 // ║  LETTERS MODE                                                             ║
 const int   LETTER_SCALE_MIN =  6;  // min glyph scale (÷1000 → canvas fraction)
 const int   LETTER_SCALE_MAX = 20;  // max glyph scale
-const float LETTER_GAP = 0.01f;        // extra spacing between characters (font units)
+const float LETTER_GAP = 1.0f;      // extra spacing between characters (font units)
 // ╠═══════════════════════════════════════════════════════════════════════════╣
 // ║  PLACE MODE  (dim dot positioning + serial text placement)               ║
 const uint8_t PLACE_LASER_POWER = 180; // nearly invisible positioning dot (0–255)
@@ -208,7 +210,7 @@ AccelStepper yStepper(AccelStepper::DRIVER, X_STEP, X_DIR);
 //  Cell: x spans [left_bearing … right_bearing], y ≈ [-12 … +10]; y negative = up.
 //  Canvas mapping: cx = ox+(gx-lb)*scale,  cy = oy+(NS_MAX_Y-gy)*scale  (canvas y increases upward)
 // ═══════════════════════════════════════════════════════════════════════════════
-const char NS_A[] PROGMEM = "I[MUWU RK[RFY[";
+const char NS_A[] PROGMEM = "I[K[MUWUY[ RMURFWU";
 const char NS_B[] PROGMEM = "G\\SPVQWRXTXWWYVZT[L[LFSFUGVHWJWLVNUOSPLP";
 const char NS_C[] PROGMEM = "F[WYVZS[Q[NZLXKVJRJOKKLINGQFSFVGWH";
 const char NS_D[] PROGMEM = "G\\L[LFQFTGVIWKXOXRWVVXTZQ[L[";
@@ -240,6 +242,23 @@ const char *const NS_TABLE[] PROGMEM = {
     NS_A, NS_B, NS_C, NS_D, NS_E, NS_F, NS_G, NS_H, NS_I, NS_J,
     NS_K, NS_L, NS_M, NS_N, NS_O, NS_P, NS_Q, NS_R, NS_S, NS_T,
     NS_U, NS_V, NS_W, NS_X, NS_Y, NS_Z};
+
+// Newstroke digits 0–9 and period (extracted from KiCad newstroke_font.cpp)
+const char NS_0[] PROGMEM = "H\\QFSFUGVHWJXNXSWWVYUZS[Q[OZNYMWLSLNMJNHOGQF";
+const char NS_1[] PROGMEM = "H\\X[L[ RR[RFPINKLL";
+const char NS_2[] PROGMEM = "H\\LHMGOFTFVGWHXJXLWOK[X[";
+const char NS_3[] PROGMEM = "H\\KFXFQNTNVOWPXRXWWYVZT[N[LZKY";
+const char NS_4[] PROGMEM = "H\\VMV[ RQELTYT";
+const char NS_5[] PROGMEM = "H\\WFMFLPMOONTNVOWPXRXWWYVZT[O[MZLY";
+const char NS_6[] PROGMEM = "H\\VFRFPGOHMKLOLWMYNZP[T[VZWYXWXRWPVOTNPNNOMPLR";
+const char NS_7[] PROGMEM = "H\\KFYFP[";
+const char NS_8[] PROGMEM = "H\\PONNMMLKLJMHNGPFTFVGWHXJXKWMVNTOPONPMQLSLWMYNZP[T[VZWYXWXSWQVPTO";
+const char NS_9[] PROGMEM = "H\\N[R[TZUYWVXRXJWHVGTFPFNGMHLJLOMQNRPSTSVRWQXO";
+const char NS_DOT[] PROGMEM = "MWRYSZR[QZRYR[";
+const char *const NS_DIGITS[] PROGMEM = {
+    NS_0, NS_1, NS_2, NS_3, NS_4, NS_5, NS_6, NS_7, NS_8, NS_9};
+const char NS_HYPHEN[] PROGMEM = "E_JSZS";
+const char NS_COLON[] PROGMEM = "MWRYSZR[QZRYR[ RRNSORPQORNRP";
 
 // Umlauts: old int8_t format, 8×12 cell — only used for Ä Ö Ü ß fallback
 // Pairs of int8_t (x,y) | -1,-1 = pen-up | 127,127 = end of glyph
@@ -527,6 +546,21 @@ void restartCalibration()
   Serial.println(F("CAL: move to LEFT limit, press button"));
 }
 
+// Skip interactive calibration: use current stepper position as origin
+// and apply the saved canvas dimensions (SAVED_CANVAS_W / SAVED_CANVAS_H).
+void quickCalibration()
+{
+  X_left  = xStepper.currentPosition();
+  Y_top   = yStepper.currentPosition();
+  X_right = X_left + SAVED_CANVAS_W;
+  Y_bot   = Y_top  + SAVED_CANVAS_H;
+  Serial.print(F("CAL: quick W="));
+  Serial.print(SAVED_CANVAS_W);
+  Serial.print(F(" H="));
+  Serial.println(SAVED_CANVAS_H);
+  finalizeCalibration();
+}
+
 void finalizeCalibration()
 {
   // Normalize axes so left < right and top < bottom
@@ -626,6 +660,7 @@ void saveCalibrationPoint()
 
 void handleCalibrationState()
 {
+  handleSerialInput();
   jogMotors();
   if (checkButtonEvent() == BTN_SHORT)
     saveCalibrationPoint();
@@ -1043,13 +1078,18 @@ void drawSerialWord(const char *word)
   for (int i = 0; i < len; i++)
   {
     char c = word[i];
+    const char *ng = nullptr;
     if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))
-    {
-      int nsIdx = (c >= 'A' && c <= 'Z') ? c - 'A' : c - 'a';
-      const char *g = (const char *)pgm_read_word(&NS_TABLE[nsIdx]);
-      totalAdv += glyphAdvance(g);
-    }
-    else totalAdv += FONT_CELL_W;
+      ng = (const char *)pgm_read_word(&NS_TABLE[(c >= 'A' && c <= 'Z') ? c - 'A' : c - 'a']);
+    else if (c >= '0' && c <= '9')
+      ng = (const char *)pgm_read_word(&NS_DIGITS[c - '0']);
+    else if (c == '.')
+      ng = NS_DOT;
+    else if (c == '-')
+      ng = NS_HYPHEN;
+    else if (c == ':')
+      ng = NS_COLON;
+    totalAdv += ng ? glyphAdvance(ng) : FONT_CELL_W;
     if (i < len - 1) totalAdv += GAP;
   }
 
@@ -1068,10 +1108,30 @@ void drawSerialWord(const char *word)
     char c = word[i];
     if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))
     {
-      int nsIdx = (c >= 'A' && c <= 'Z') ? c - 'A' : c - 'a';
-      const char *g = (const char *)pgm_read_word(&NS_TABLE[nsIdx]);
+      const char *g = (const char *)pgm_read_word(&NS_TABLE[(c >= 'A' && c <= 'Z') ? c - 'A' : c - 'a']);
       drawGlyphNS(ox + curX * scale, oy, scale, g);
       curX += glyphAdvance(g) + GAP;
+    }
+    else if (c >= '0' && c <= '9')
+    {
+      const char *g = (const char *)pgm_read_word(&NS_DIGITS[c - '0']);
+      drawGlyphNS(ox + curX * scale, oy, scale, g);
+      curX += glyphAdvance(g) + GAP;
+    }
+    else if (c == '.')
+    {
+      drawGlyphNS(ox + curX * scale, oy, scale, NS_DOT);
+      curX += glyphAdvance(NS_DOT) + GAP;
+    }
+    else if (c == '-')
+    {
+      drawGlyphNS(ox + curX * scale, oy, scale, NS_HYPHEN);
+      curX += glyphAdvance(NS_HYPHEN) + GAP;
+    }
+    else if (c == ':')
+    {
+      drawGlyphNS(ox + curX * scale, oy, scale, NS_COLON);
+      curX += glyphAdvance(NS_COLON) + GAP;
     }
     else
     {
@@ -1117,10 +1177,30 @@ void drawWordAt(const char *word, float ox, float oy, float scale)
     char c = word[i];
     if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))
     {
-      int nsIdx = (c >= 'A' && c <= 'Z') ? c - 'A' : c - 'a';
-      const char *g = (const char *)pgm_read_word(&NS_TABLE[nsIdx]);
+      const char *g = (const char *)pgm_read_word(&NS_TABLE[(c >= 'A' && c <= 'Z') ? c - 'A' : c - 'a']);
       drawGlyphNS(ox + curX * scale, oy, scale, g);
       curX += glyphAdvance(g) + GAP;
+    }
+    else if (c >= '0' && c <= '9')
+    {
+      const char *g = (const char *)pgm_read_word(&NS_DIGITS[c - '0']);
+      drawGlyphNS(ox + curX * scale, oy, scale, g);
+      curX += glyphAdvance(g) + GAP;
+    }
+    else if (c == '.')
+    {
+      drawGlyphNS(ox + curX * scale, oy, scale, NS_DOT);
+      curX += glyphAdvance(NS_DOT) + GAP;
+    }
+    else if (c == '-')
+    {
+      drawGlyphNS(ox + curX * scale, oy, scale, NS_HYPHEN);
+      curX += glyphAdvance(NS_HYPHEN) + GAP;
+    }
+    else if (c == ':')
+    {
+      drawGlyphNS(ox + curX * scale, oy, scale, NS_COLON);
+      curX += glyphAdvance(NS_COLON) + GAP;
     }
     else
     {
@@ -1811,6 +1891,11 @@ void parseSerialCommand(char *cmd)
     serialInterrupt = true;
     Serial.println(F("OK"));
   }
+  else if (cmd[0] == 'K')
+  {
+    quickCalibration();
+    serialInterrupt = true;
+  }
   else if (strlen(cmd) > 1 && currentDrawMode == MODE_LETTERS)
   {
     // Multi-char input in letters mode → queue as word to draw
@@ -1820,26 +1905,33 @@ void parseSerialCommand(char *cmd)
   }
   else if (currentDrawMode == MODE_PLACE)
   {
-    // Numeric input → font size; anything else → draw word at current position
-    bool isNum = (strlen(cmd) > 0);
-    for (int i = 0; cmd[i] != '\0'; i++)
-      if (cmd[i] < '0' || cmd[i] > '9')
-      {
-        isNum = false;
-        break;
-      }
-
-    if (isNum)
+    int cmdLen = strlen(cmd);
+    if (cmdLen >= 2 && cmd[0] == '"' && cmd[cmdLen - 1] == '"')
     {
-      placeFontSize = constrain(atoi(cmd), 1, 200);
-      Serial.print(F("PLACE SIZE: "));
-      Serial.println(placeFontSize);
-    }
-    else if (strlen(cmd) > 0)
-    {
-      strncpy(pendingWord, cmd, 16);
-      pendingWord[16] = '\0';
+      // "quoted string" → draw at current position
+      int wLen = min(cmdLen - 2, 16);
+      strncpy(pendingWord, cmd + 1, wLen);
+      pendingWord[wLen] = '\0';
       serialInterrupt = true;
+    }
+    else
+    {
+      // Bare number → font size
+      bool isNum = (cmdLen > 0);
+      for (int i = 0; cmd[i] != '\0'; i++)
+        if (cmd[i] < '0' || cmd[i] > '9')
+        {
+          isNum = false;
+          break;
+        }
+      if (isNum)
+      {
+        placeFontSize = constrain(atoi(cmd), 1, 200);
+        Serial.print(F("PLACE SIZE: "));
+        Serial.println(placeFontSize);
+      }
+      else
+        Serial.println(F("ERR: use \"text\" to draw, number to set size"));
     }
   }
   else
