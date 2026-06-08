@@ -61,3 +61,6 @@ The nature of memories inspires me deeply. Working out an artistic concept towar
 With my installaton, I try to create a noteworthy moment of connection for both me and the observer with the installation itself as with the observer before and after them. The screen is being drawn on collectively. Memories get created in the moment of performing the first gestures in this newly discovered world. Nothing stays forever yet nothing can be erased either. Isn't that what makes a memory? For me, this project is a diary, a dialog, an inner expression, a Déjà-vu, a microbiography, an archive of acquaintances.
 
 As the core and foundation of personality, memories might scream loudly out of dissonance or quietly fade into indifferet realms, be absent in one moment or very close in another. Some might feel forgotten until their return at an unforseen occasion. We act as preservators of those biographical atoms. Our own as well as our adopted ones. The work is ultimately inspired by cultures of remembrance like they exist in many different forms worldwide, where memories get **passed on** to future generations as a part of a preservational culture.
+
+
+(Lumaries)[https://www.youtube.com/watch?v=yPWX4nCJhSs]
