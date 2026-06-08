@@ -63,4 +63,4 @@ With my installaton, I try to create a noteworthy moment of connection for both 
 As the core and foundation of personality, memories might scream loudly out of dissonance or quietly fade into indifferet realms, be absent in one moment or very close in another. Some might feel forgotten until their return at an unforseen occasion. We act as preservators of those biographical atoms. Our own as well as our adopted ones. The work is ultimately inspired by cultures of remembrance like they exist in many different forms worldwide, where memories get **passed on** to future generations as a part of a preservational culture.
 
 
-(Lumaries)[https://www.youtube.com/watch?v=yPWX4nCJhSs]
+[Lumaries](https://www.youtube.com/watch?v=yPWX4nCJhSs)
