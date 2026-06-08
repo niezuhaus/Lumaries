@@ -20,9 +20,11 @@ that i remember all along?
 
 ![Photo2.jpg](Photo2.jpg)
 
-Lumaries is an interactive installation built around the concepts of memories and interaction. Approaching, the observer will notice a moving laserdot on a screen that leaves a glowing trace behind. In front of the screen on a socket sits a wooden box:  **the projector** with a controller attached to it. Via this controller the observer can **interrupt** the laserdot and take control over its movements. As being interrupted those movements get **remembered**. As being left alone, the projector begins to *tell* those memories, drawing them out loud on the screen. Every time the story gets told, its path draws differently yet its essence remains. Over time those paths will average to a multitude of different **version of reality**.
-The installation embodies both short and long term memory. The former by the memorability of the screen itself and the latter by the installation *recapitulating*  its memories over time.
-A **halogen sun** it connected to the projector. After a while **sun will rise**, flooding the entire canvas with bright light. Clouds might cover it there are any today, but **no memories** are visible whatsoever. Only after sun has set the quiet drawing continues. The screen of course charged to the last corner but not to its full potential. Those last drawings that were made before todays dawn are still there. As if they were never gone. 
+Lumaries is an interactive installation built around the concepts of memories and interaction. Approaching, the observer will notice a moving laserdot on a screen that leaves a glowing trace behind. In front of the screen on a socket sits a wooden box:  **the projector** with a controller attached to it. Via this controller the observer can **interrupt** the laserdot and take control over its movements. As being interrupted those movements get **remembered**. As being left alone, the projector begins to **tell** those memories, drawing them out loud on the screen. Every time the story gets told, its path draws differently yet its essence remains. Over time those paths will average to a multitude of different **version of reality**.
+The installation embodies both short and long term memory. The former by the memorability of the screen itself and the latter by the installation **recapitulating**  its memories over time.
+A **halogen sun** it connected to the projector. After a while **sun will rise**, flooding the entire canvas with bright light. Clouds might cover it there are any today, but **no memories** are visible whatsoever. Only after sun has set the quiet drawing continues. The screen of course charged to the last corner but not to its full potential. Those last drawings that were made before todays dawn are still there. As if they were never gone.
+
+[See the video of the Installation](https://www.youtube.com/watch?v=yPWX4nCJhSs)
 
 ### the screen
 
@@ -48,9 +50,11 @@ The controler is a piece of wood, that is covered in the same phosphorescent col
 
 A 300W halogen spot acts as a sun, providing the installation with a second state: Daytime. The spot is connected to a dimmer that is being controlled by the microcontroller via DMX signals. Via software, the spot gets dimmed to simulate clouds of different sizes that cover the sun.
 
-### software
+### the software
 
-The software to control the installation 
+The whole installation runs from a single C++ sketch on the Arduino Mega 2560. The two stepper motors are driven through the **AccelStepper** library, and a short calibration maps the screen into a normalised **coordinate system**, so every point can be addressed as a fraction of the canvas rather than in raw motor steps. The laser is dimmed over **PWM** through a gamma curve for an even brightness response, while the halogen sun is reached by a hand-timed **DMX512** signal over RS485. The program is built as a state machine running in one continuous loop: a drawing routine blocks while it traces a shape but keeps listening for input, so a touch of the thumbstick can interrupt it at any moment. Gestures are held as sampled arrays of points in memory and played back with a added noise, and the generative motions — circles, spirals, rain — are all parametric, their character set by a handful of constants at the top of the code.
+
+[Find the Code on GitHub](https://github.com/niezuhaus/Lumaries)
 
 ## intention and motivation
 
@@ -63,4 +67,3 @@ With my installaton, I try to create a noteworthy moment of connection for both 
 As the core and foundation of personality, memories might scream loudly out of dissonance or quietly fade into indifferet realms, be absent in one moment or very close in another. Some might feel forgotten until their return at an unforseen occasion. We act as preservators of those biographical atoms. Our own as well as our adopted ones. The work is ultimately inspired by cultures of remembrance like they exist in many different forms worldwide, where memories get **passed on** to future generations as a part of a preservational culture.
 
 
-[Lumaries](https://www.youtube.com/watch?v=yPWX4nCJhSs)
