@@ -1,21 +1,5 @@
 ![Photo1.jpg](Photo1.jpg)
 
-meet, 
-talk,
-split, 
-remember.
-
-the very moment i met you,
-you started fading.
-
-just below my thought
-i will be looking for you.
-
-who decides what i can keep?
-who will ever notice?
-who creates your shape
-that i remember all along?
-
 # Lumaries
 
 ![Photo2.jpg](Photo2.jpg)
