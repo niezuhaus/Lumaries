@@ -6,7 +6,9 @@
 
 Photo by Tim Redlich
 
-Lumaries is an interactive installation built around the concepts of memories and interaction. Approaching, the observer will notice a moving laserdot on a screen that leaves a glowing trace behind. In front of the screen on a socket sits a wooden box:  **the projector** with a controller attached to it. Via this controller the observer can **interrupt** the laserdot and take control over its movements. As being interrupted those movements get **remembered**. As being left alone, the projector begins to **tell** those memories, drawing them out loud on the screen. Every time the story gets told, its path draws differently yet its essence remains. Over time those paths will average to a multitude of different **version of reality**.
+Lumaries is an interactive, memorative light painting platform. 
+
+When approaching visitors will notice a moving laserdot on a screen that leaves a glowing trace behind. In front of the screen on a socket sits a wooden box:  **the projector** with a controller attached to it. Via this controller the observer can **interrupt** the laserdot and take control over its movements. As being interrupted those movements get **remembered**. As being left alone, the projector begins to **tell** those memories, drawing them out loud on the screen. Every time the story gets told, its path draws differently yet its essence remains. Over time those paths will average to a multitude of different **versions of reality**.
 The installation embodies both short and long term memory. The former by the memorability of the screen itself and the latter by the installation **recapitulating**  its memories over time.
 A **halogen sun** it connected to the projector. After a while **sun will rise**, flooding the entire canvas with bright light. Clouds might cover it there are any today, but **no memories** are visible whatsoever. Only after sun has set the quiet drawing continues. The screen of course charged to the last corner but not to its full potential. Those last drawings that were made before todays dawn are still there. As if they were never gone.
 
