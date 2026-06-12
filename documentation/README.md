@@ -12,7 +12,7 @@ When approaching visitors will notice a moving laserdot on a screen that leaves 
 The installation embodies both short and long term memory. The former by the memorability of the screen itself and the latter by the installation **recapitulating**  its memories over time.
 A **halogen sun** it connected to the projector. After a while **sun will rise**, flooding the entire canvas with bright light. Clouds might cover it there are any today, but **no memories** are visible whatsoever. Only after sun has set the quiet drawing continues. The screen of course charged to the last corner but not to its full potential. Those last drawings that were made before todays dawn are still there. As if they were never gone.
 
-[See the video of the Installation](https://www.youtube.com/watch?v=yPWX4nCJhSs)
+[See the video of the Installation](https://youtu.be/eK0kQ7ugPKs)
 
 ### the screen
 
